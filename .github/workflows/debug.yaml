@@ -30,6 +30,18 @@ jobs:
         cat Dockerfile.minimal
         echo ""
 
+    - name: Test super simple build first
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.test
+        platforms: linux/amd64
+        push: false
+        tags: k8s-tmux:test
+        
+    - name: Test simple success
+      run: echo "✅ Super simple test passed!"
+
     - name: Test minimal build (no push)
       uses: docker/build-push-action@v5
       with:

@@ -1,0 +1,94 @@
+FROM ubuntu:22.04
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install base packages
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    git \
+    vim \
+    nano \
+    tmux \
+    zsh \
+    sudo \
+    openssh-client \
+    tar \
+    gzip \
+    unzip \
+    jq \
+    python3 \
+    python3-pip \
+    build-essential \
+    ca-certificates \
+    mc \
+    tree \
+    htop \
+    bash-completion \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install kubectl
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
+    install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl && \
+    rm kubectl
+
+# Install helm
+RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# Install kubectx and kubens
+RUN curl -L https://github.com/ahmetb/kubectx/releases/latest/download/kubectx_linux_x86_64.tar.gz | tar xz -C /usr/local/bin kubectx && \
+    curl -L https://github.com/ahmetb/kubectx/releases/latest/download/kubens_linux_x86_64.tar.gz | tar xz -C /usr/local/bin kubens && \
+    chmod +x /usr/local/bin/kubectx /usr/local/bin/kubens
+
+# Install k9s
+RUN curl -L https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_amd64.tar.gz | tar xz -C /tmp && \
+    mv /tmp/k9s /usr/local/bin/k9s && \
+    chmod +x /usr/local/bin/k9s
+
+# Install ttyd for web terminal access
+RUN curl -L https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64 -o /usr/local/bin/ttyd && \
+    chmod +x /usr/local/bin/ttyd
+
+# Create user
+RUN useradd -m -s /bin/zsh dev && \
+    echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Configure tmux
+COPY tmux.conf /home/dev/.tmux.conf
+
+# Configure shell environments
+USER dev
+WORKDIR /home/dev
+RUN sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" --unattended
+
+# Enable bash completion and configure aliases
+RUN echo 'source /etc/bash_completion' >> ~/.bashrc && \
+    echo 'source <(kubectl completion bash)' >> ~/.bashrc && \
+    echo 'source <(helm completion bash)' >> ~/.bashrc && \
+    echo 'alias k=kubectl' >> ~/.bashrc && \
+    echo 'alias kx=kubectx' >> ~/.bashrc && \
+    echo 'alias kn=kubens' >> ~/.bashrc && \
+    echo 'alias ll="ls -la"' >> ~/.bashrc
+
+# Configure zsh with completion and aliases
+RUN echo 'source <(kubectl completion zsh)' >> ~/.zshrc && \
+    echo 'source <(helm completion zsh)' >> ~/.zshrc && \
+    echo 'alias k=kubectl' >> ~/.zshrc && \
+    echo 'alias kx=kubectx' >> ~/.zshrc && \
+    echo 'alias kn=kubens' >> ~/.zshrc && \
+    echo 'alias ll="ls -la"' >> ~/.zshrc
+
+# Copy initialization script
+COPY --chown=dev:dev init.sh /home/dev/init.sh
+RUN chmod +x /home/dev/init.sh
+
+# Create mount points
+USER root
+RUN mkdir -p /mnt/k8s-tmux /mnt/WiredQuill && \
+    chown dev:dev /mnt/k8s-tmux /mnt/WiredQuill
+
+USER dev
+EXPOSE 7681
+
+CMD ["/home/dev/init.sh"]

@@ -1,0 +1,13 @@
+FROM opensuse/leap:15.6
+
+# Test just the base image
+RUN echo "Testing base image..." && \
+    zypper --version && \
+    echo "Base image works!"
+
+# Test basic package install
+RUN zypper refresh && \
+    zypper install -y curl && \
+    echo "Basic package install works!"
+
+CMD ["echo", "Simple test successful"]
