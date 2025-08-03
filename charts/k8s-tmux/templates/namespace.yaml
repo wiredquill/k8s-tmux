@@ -1,6 +1,8 @@
+{{- if .Values.namespaceCreate }}
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ .Release.Namespace }}
+  name: {{ .Values.namespaceName | default .Release.Namespace }}
   labels:
     {{- include "k8s-tmux.labels" . | nindent 4 }}
+{{- end }}

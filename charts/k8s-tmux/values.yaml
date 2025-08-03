@@ -1,4 +1,8 @@
 # Default values for k8s-tmux
+# Namespace configuration
+namespaceCreate: false
+namespaceName: "ai-dev"
+
 replicaCount: 1
 
 image:

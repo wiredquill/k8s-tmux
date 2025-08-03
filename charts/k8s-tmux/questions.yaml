@@ -1,4 +1,18 @@
 questions:
+- variable: namespaceCreate
+  default: false
+  description: "Create a new namespace for this installation"
+  type: boolean
+  label: Create New Namespace
+  group: "Deployment Configuration"
+  show_subquestion_if: true
+  subquestions:
+  - variable: namespaceName
+    default: "ai-dev"
+    description: "Name of the namespace to create"
+    type: string
+    label: Namespace Name
+
 - variable: replicaCount
   default: 1
   description: "Number of replicas to deploy"
