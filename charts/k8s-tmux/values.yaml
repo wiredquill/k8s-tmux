@@ -3,6 +3,8 @@
 namespaceCreate: false
 namespaceName: "ai-dev"
 
+# Deployment configuration
+deploymentName: "k8s-tmux"
 replicaCount: 1
 
 image:

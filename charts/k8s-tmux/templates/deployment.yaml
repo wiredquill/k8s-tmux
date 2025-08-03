@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "k8s-tmux.fullname" . }}
+  name: {{ .Values.deploymentName | default (include "k8s-tmux.fullname" .) }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "k8s-tmux.labels" . | nindent 4 }}
