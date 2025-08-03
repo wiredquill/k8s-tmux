@@ -30,17 +30,29 @@ RUN zypper install -y iputils || echo "iputils not available, skipping" && \
     zypper install -y nfs-client || echo "nfs-client not available, skipping" && \
     zypper install -y xclip || echo "xclip not available, skipping"
 
-# Install kubectl
-RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
-    install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl && \
-    rm kubectl
+# Add Kubernetes repository and install kubectl/helm
+RUN zypper addrepo https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64 kubernetes || echo "Failed to add k8s repo" && \
+    zypper --gpg-auto-import-keys refresh || echo "Refresh failed" && \
+    zypper install -y kubectl || \
+    (echo "Installing kubectl manually..." && \
+     curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
+     install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl && \
+     rm kubectl)
 
-# Install helm
+# Install helm manually (more reliable)
 RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-# Install kubectx and kubens
-RUN curl -L https://github.com/ahmetb/kubectx/releases/latest/download/kubectx_linux_x86_64.tar.gz | tar xz -C /usr/local/bin kubectx && \
-    curl -L https://github.com/ahmetb/kubectx/releases/latest/download/kubens_linux_x86_64.tar.gz | tar xz -C /usr/local/bin kubens && \
+# Install kubectx and kubens with error handling
+RUN KUBECTX_VERSION=$(curl -s https://api.github.com/repos/ahmetb/kubectx/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/') && \
+    echo "Installing kubectx version: $KUBECTX_VERSION" && \
+    curl -L "https://github.com/ahmetb/kubectx/releases/download/${KUBECTX_VERSION}/kubectx_${KUBECTX_VERSION}_linux_x86_64.tar.gz" | tar xz -C /tmp && \
+    curl -L "https://github.com/ahmetb/kubectx/releases/download/${KUBECTX_VERSION}/kubens_${KUBECTX_VERSION}_linux_x86_64.tar.gz" | tar xz -C /tmp && \
+    mv /tmp/kubectx /usr/local/bin/kubectx && \
+    mv /tmp/kubens /usr/local/bin/kubens && \
+    chmod +x /usr/local/bin/kubectx /usr/local/bin/kubens || \
+    echo "kubectx/kubens installation failed, creating aliases instead" && \
+    echo '#!/bin/bash\necho "kubectx not available - use kubectl config use-context"' > /usr/local/bin/kubectx && \
+    echo '#!/bin/bash\necho "kubens not available - use kubectl config set-context --current --namespace"' > /usr/local/bin/kubens && \
     chmod +x /usr/local/bin/kubectx /usr/local/bin/kubens
 
 # Install k9s
@@ -115,7 +127,7 @@ RUN chmod +x /home/dev/init.sh
 # Create mount points
 USER root
 RUN mkdir -p /mnt/k8s-tmux /mnt/WiredQuill && \
-    chown dev:dev /mnt/k8s-tmux /mnt/WiredQuill
+    chown dev:users /mnt/k8s-tmux /mnt/WiredQuill
 
 USER dev
 EXPOSE 7681

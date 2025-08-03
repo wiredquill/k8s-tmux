@@ -13,9 +13,7 @@ spec:
     requests:
       storage: {{ .Values.persistence.k8sTmux.size }}
   volumeName: {{ include "k8s-tmux.fullname" . }}-k8s-tmux-pv
-  {{- if .Values.persistence.k8sTmux.storageClass }}
-  storageClassName: {{ .Values.persistence.k8sTmux.storageClass }}
-  {{- end }}
+  storageClassName: ""
 ---
 {{- end }}
 {{- if .Values.persistence.wiredQuill.enabled }}
@@ -33,7 +31,5 @@ spec:
     requests:
       storage: {{ .Values.persistence.wiredQuill.size }}
   volumeName: {{ include "k8s-tmux.fullname" . }}-wiredquill-pv
-  {{- if .Values.persistence.wiredQuill.storageClass }}
-  storageClassName: {{ .Values.persistence.wiredQuill.storageClass }}
-  {{- end }}
+  storageClassName: ""
 {{- end }}

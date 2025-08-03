@@ -25,14 +25,16 @@ export BUILDKIT_HOST=tcp://10.0.10.120:1234
 
 echo "Using buildkit at: $BUILDKIT_HOST"
 
-# Build and push to local registry (if available) or build for loading
+# Build container image (no direct docker output to avoid terminal overflow)
 buildctl build \
     --frontend dockerfile.v0 \
     --local context=. \
     --local dockerfile=. \
-    --output type=docker,name=k8s-tmux:latest \
-    --export-cache type=inline \
-    --import-cache type=registry,ref=k8s-tmux:buildcache
+    --export-cache type=inline
+
+echo "Image built successfully with buildkit"
+echo "Note: Image is available on the buildkit daemon but not in local docker"
+echo "For local testing, use a different approach or pull from registry"
 
 echo "Container built successfully using wq-prod buildkit!"
 echo "To deploy: kubectl apply -f deployment.yaml"

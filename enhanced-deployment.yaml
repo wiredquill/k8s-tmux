@@ -1,0 +1,229 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: terminal-config
+  namespace: ai-dev
+data:
+  style.css: |
+    .terminal {
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace !important;
+        font-size: 16px !important;
+        line-height: 1.4 !important;
+        background-color: #1a1a1a !important;
+        color: #e0e0e0 !important;
+        padding: 20px !important;
+    }
+    
+    .terminal .xterm-cursor-layer {
+        color: #00ff41 !important;
+    }
+    
+    /* User input in green */
+    .terminal .xterm-fg-2 { color: #00ff41 !important; }
+    
+    /* System output in cyan */
+    .terminal .xterm-fg-6 { color: #00bfff !important; }
+    
+    /* Error text in red */
+    .terminal .xterm-fg-1 { color: #ff6b6b !important; }
+    
+    /* Prompt in yellow */
+    .terminal .xterm-fg-3 { color: #ffd93d !important; }
+    
+    .file-manager {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        background: rgba(0,0,0,0.8);
+        padding: 10px;
+        border-radius: 5px;
+        color: white;
+        z-index: 1000;
+    }
+    
+    .file-upload-btn, .config-btn {
+        background: #007acc;
+        color: white;
+        border: none;
+        padding: 8px 12px;
+        margin: 2px;
+        border-radius: 3px;
+        cursor: pointer;
+        font-size: 12px;
+    }
+    
+    .file-upload-btn:hover, .config-btn:hover {
+        background: #005a9e;
+    }
+
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>k8s-tmux Terminal</title>
+        <meta charset="UTF-8">
+        <link rel="stylesheet" href="style.css">
+        <style>
+            body { margin: 0; padding: 0; background: #1a1a1a; }
+            .file-manager {
+                position: fixed;
+                top: 10px;
+                right: 10px;
+                background: rgba(0,0,0,0.9);
+                padding: 15px;
+                border-radius: 8px;
+                color: white;
+                z-index: 1000;
+                border: 1px solid #333;
+            }
+            .btn {
+                background: #007acc;
+                color: white;
+                border: none;
+                padding: 8px 12px;
+                margin: 2px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 12px;
+                text-decoration: none;
+                display: inline-block;
+            }
+            .btn:hover { background: #005a9e; }
+            #fileInput { display: none; }
+            .status { font-size: 10px; color: #888; margin-top: 10px; }
+        </style>
+    </head>
+    <body>
+        <div class="file-manager">
+            <div>📁 File Manager</div>
+            <input type="file" id="fileInput" multiple>
+            <button class="btn" onclick="document.getElementById('fileInput').click()">📤 Upload</button>
+            <a href="/files" class="btn" target="_blank">📥 Browse</a>
+            <button class="btn" onclick="downloadLogs()">📋 Logs</button>
+            <button class="btn" onclick="toggleConfig()">⚙️ Config</button>
+            <div class="status">
+                Session: AI Development<br>
+                Storage: NFS Connected
+            </div>
+        </div>
+        
+        <div id="terminal-container" style="height: 100vh;"></div>
+        
+        <script>
+            // File upload handling
+            document.getElementById('fileInput').addEventListener('change', function(e) {
+                for (let file of e.target.files) {
+                    uploadFile(file);
+                }
+            });
+            
+            function uploadFile(file) {
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.text())
+                .then(result => {
+                    console.log('Upload successful:', result);
+                    // Could send a command to terminal to refresh file listing
+                })
+                .catch(error => {
+                    console.error('Upload failed:', error);
+                });
+            }
+            
+            function downloadLogs() {
+                window.open('/logs/session.log', '_blank');
+            }
+            
+            function toggleConfig() {
+                // Toggle terminal settings
+                const terminal = document.querySelector('.terminal');
+                if (terminal) {
+                    const currentSize = parseInt(terminal.style.fontSize) || 16;
+                    terminal.style.fontSize = (currentSize === 16 ? '20' : '16') + 'px';
+                }
+            }
+            
+            // Auto-connect to ttyd WebSocket
+            window.addEventListener('load', function() {
+                // ttyd will inject its own terminal connection code here
+            });
+        </script>
+    </body>
+    </html>
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux-enhanced
+  namespace: ai-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux-enhanced
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux-enhanced
+    spec:
+      containers:
+      - name: terminal
+        image: alpine:latest
+        ports:
+        - containerPort: 7681
+        - containerPort: 22
+        command: ["/bin/sh"]
+        args: ["-c", "apk add --no-cache ttyd openssh bash curl nano vim && \
+                      echo 'root:password123' | chpasswd && \
+                      ssh-keygen -A && \
+                      /usr/sbin/sshd && \
+                      ttyd -p 7681 -W /mnt/k8s-tmux \
+                      --index-file /config/index.html \
+                      --base-path / \
+                      --url-arg \
+                      bash -c 'cd /mnt/k8s-tmux && exec bash'"]
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        - name: terminal-config
+          mountPath: /config
+        env:
+        - name: TERM
+          value: "xterm-256color"
+      volumes:
+      - name: k8s-tmux-storage
+        persistentVolumeClaim:
+          claimName: k8s-tmux-k8s-tmux-pvc
+      - name: wiredquill-storage
+        persistentVolumeClaim:
+          claimName: k8s-tmux-wiredquill-pvc
+      - name: terminal-config
+        configMap:
+          name: terminal-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-enhanced-service
+  namespace: ai-dev
+spec:
+  selector:
+    app: k8s-tmux-enhanced
+  ports:
+  - name: web
+    protocol: TCP
+    port: 80
+    targetPort: 7681
+  - name: ssh
+    protocol: TCP
+    port: 22
+    targetPort: 22
+  type: LoadBalancer

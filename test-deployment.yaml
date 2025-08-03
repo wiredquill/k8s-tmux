@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux-test
+  namespace: ai-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux-test
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux-test
+    spec:
+      containers:
+      - name: ttyd
+        image: tsl0922/ttyd:alpine
+        ports:
+        - containerPort: 7681
+        command: ["ttyd"]
+        args: ["bash"]
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+      volumes:
+      - name: k8s-tmux-storage
+        persistentVolumeClaim:
+          claimName: k8s-tmux-k8s-tmux-pvc
+      - name: wiredquill-storage
+        persistentVolumeClaim:
+          claimName: k8s-tmux-wiredquill-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-test-service
+  namespace: ai-dev
+spec:
+  selector:
+    app: k8s-tmux-test
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 7681
+  type: LoadBalancer

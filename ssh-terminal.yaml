@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux-ssh
+  namespace: ai-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux-ssh
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux-ssh
+    spec:
+      containers:
+      - name: ssh-terminal
+        image: alpine:latest
+        ports:
+        - containerPort: 22
+        - containerPort: 7681
+        command: ["/bin/sh"]
+        args: ["-c", "apk add --no-cache openssh bash sudo curl nano vim git kubectl helm && echo 'root:tmux123' | chpasswd && ssh-keygen -A && adduser -D -s /bin/bash tmux && echo 'tmux:tmux123' | chpasswd && echo 'tmux ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers && /usr/sbin/sshd -D"]
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        env:
+        - name: TERM
+          value: "xterm-256color"
+      volumes:
+      - name: k8s-tmux-storage
+        persistentVolumeClaim:
+          claimName: k8s-tmux-k8s-tmux-pvc
+      - name: wiredquill-storage
+        persistentVolumeClaim:
+          claimName: k8s-tmux-wiredquill-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-ssh-service
+  namespace: ai-dev
+spec:
+  selector:
+    app: k8s-tmux-ssh
+  ports:
+  - name: ssh
+    protocol: TCP
+    port: 22
+    targetPort: 22
+  type: LoadBalancer

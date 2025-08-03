@@ -7,7 +7,7 @@ replicaCount: 1
 
 image:
   repository: k8s-tmux
-  pullPolicy: IfNotPresent
+  pullPolicy: Never
   tag: "latest"
 
 nameOverride: ""
