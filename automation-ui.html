@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>k8s-tmux Terminal with Automation</title>
+    <meta charset="UTF-8">
+    <style>
+        body { 
+            margin: 0; 
+            padding: 0; 
+            background: #1a1a1a; 
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            color: #e0e0e0;
+        }
+        
+        .controls-panel {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.9);
+            padding: 15px;
+            border-radius: 8px;
+            color: white;
+            z-index: 1000;
+            border: 1px solid #333;
+            min-width: 300px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        
+        .panel-section {
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #444;
+        }
+        
+        .panel-section:last-child {
+            border-bottom: none;
+        }
+        
+        .panel-title {
+            font-weight: bold;
+            color: #00bfff;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .btn {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            margin: 2px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            font-family: inherit;
+        }
+        
+        .btn:hover { background: #005a9e; }
+        .btn-success { background: #28a745; }
+        .btn-success:hover { background: #1e7e34; }
+        .btn-secondary { background: #6c757d; }
+        .btn-secondary:hover { background: #545b62; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #c82333; }
+        
+        .form-group {
+            margin-bottom: 8px;
+        }
+        
+        .form-group label {
+            display: block;
+            font-size: 11px;
+            color: #ccc;
+            margin-bottom: 3px;
+        }
+        
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 5px;
+            border: 1px solid #555;
+            background: #2a2a2a;
+            color: #e0e0e0;
+            border-radius: 3px;
+            font-size: 11px;
+            font-family: inherit;
+        }
+        
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: #007acc;
+        }
+        
+        .status-display {
+            background: #2a2a2a;
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            line-height: 1.4;
+        }
+        
+        .scheduled-message {
+            background: #333;
+            padding: 5px;
+            margin: 3px 0;
+            border-radius: 3px;
+            font-size: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .scheduled-message button {
+            background: #dc3545;
+            border: none;
+            color: white;
+            padding: 2px 5px;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: 10px;
+        }
+        
+        .toggle-panel {
+            position: fixed;
+            top: 10px;
+            right: 320px;
+            background: rgba(0,0,0,0.8);
+            padding: 8px;
+            border-radius: 4px;
+            z-index: 1001;
+        }
+        
+        .toggle-panel button {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        
+        #terminal-container {
+            height: 100vh;
+            padding-right: 330px;
+        }
+        
+        .hidden { display: none; }
+        
+        .rule-input {
+            width: 50px !important;
+            display: inline-block !important;
+            text-align: center;
+        }
+        
+        .quick-schedule {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+            margin-top: 5px;
+        }
+        
+        .quick-schedule button {
+            font-size: 10px;
+            padding: 3px 6px;
+        }
+    </style>
+</head>
+<body>
+    <div class="toggle-panel">
+        <button onclick="toggleControlsPanel()">⚙️ Controls</button>
+    </div>
+    
+    <div class="controls-panel" id="controls-panel">
+        <!-- Remote Mode Section -->
+        <div class="panel-section">
+            <div class="panel-title">📡 Remote Mode</div>
+            <button class="btn" onclick="toggleRemoteMode()" id="remote-toggle-btn">🔴 Remote: OFF</button>
+            <div style="font-size: 10px; color: #888; margin-top: 5px;">
+                Topic: ai_communication<br>
+                Server: ntfy.wiredquill.com
+            </div>
+        </div>
+        
+        <!-- Auto-Response Section -->
+        <div class="panel-section">
+            <div class="panel-title">🔄 Auto-Response</div>
+            <button class="btn btn-secondary" onclick="toggleAutoResponseFromUI()" id="auto-response-toggle">
+                🔄 Auto-Response: OFF
+            </button>
+            
+            <div class="form-group" style="margin-top: 8px;">
+                <label>Rules:</label>
+                <div style="display: flex; align-items: center; gap: 10px; font-size: 11px;">
+                    <span>2-choice →</span>
+                    <input type="number" class="rule-input" id="two-choice-rule" value="1" min="1" max="2" onchange="updateRulesFromUI()">
+                    <span>3-choice →</span>
+                    <input type="number" class="rule-input" id="three-choice-rule" value="2" min="1" max="3" onchange="updateRulesFromUI()">
+                </div>
+            </div>
+        </div>
+        
+        <!-- Scheduled Messages Section -->
+        <div class="panel-section">
+            <div class="panel-title">📅 Schedule Message</div>
+            
+            <div class="form-group">
+                <label>Message:</label>
+                <input type="text" id="schedule-message" placeholder="Message to send..." maxlength="200">
+            </div>
+            
+            <div class="form-group">
+                <label>Time:</label>
+                <input type="datetime-local" id="schedule-time">
+            </div>
+            
+            <button class="btn" onclick="scheduleMessageFromUI()">⏰ Schedule</button>
+            
+            <div class="quick-schedule">
+                <button class="btn" onclick="quickSchedule(1)">+1min</button>
+                <button class="btn" onclick="quickSchedule(5)">+5min</button>
+                <button class="btn" onclick="quickSchedule(10)">+10min</button>
+                <button class="btn" onclick="quickSchedule(30)">+30min</button>
+            </div>
+        </div>
+        
+        <!-- Scheduled Messages List -->
+        <div class="panel-section">
+            <div class="panel-title">📋 Scheduled Messages</div>
+            <div id="schedule-list" style="max-height: 150px; overflow-y: auto;">
+                <div style="color: #888; font-size: 10px;">No scheduled messages</div>
+            </div>
+        </div>
+        
+        <!-- Status Display -->
+        <div class="panel-section">
+            <div class="panel-title">📊 Status</div>
+            <div id="automation-status" class="status-display">
+                <div>🔄 Auto-response: OFF</div>
+                <div>📅 Scheduled: 0</div>
+                <div>📋 Rules: 2-choice→1, 3-choice→2</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="terminal-container"></div>
+    
+    <script src="automation-config.js"></script>
+    <script>
+        let terminal = null;
+        let remoteMode = false;
+        
+        // Initialize terminal when page loads
+        window.addEventListener('load', function() {
+            // Create terminal connection to ttyd
+            const ws = new WebSocket(`ws://${window.location.host}/ws`);
+            
+            // Initialize automation when terminal is ready
+            setTimeout(() => {
+                if (terminal) {
+                    automation = new TerminalAutomation(terminal);
+                    automation.updateStatusDisplay();
+                }
+            }, 1000);
+        });
+        
+        function toggleControlsPanel() {
+            const panel = document.getElementById('controls-panel');
+            panel.classList.toggle('hidden');
+        }
+        
+        function toggleRemoteMode() {
+            remoteMode = !remoteMode;
+            const btn = document.getElementById('remote-toggle-btn');
+            btn.textContent = remoteMode ? '🟢 Remote: ON' : '🔴 Remote: OFF';
+            btn.className = remoteMode ? 'btn btn-success' : 'btn';
+            
+            // Send remote toggle command to terminal
+            if (automation) {
+                automation.sendMessage('remote-toggle');
+            }
+        }
+        
+        function quickSchedule(minutes) {
+            const messageInput = document.getElementById('schedule-message');
+            const timeInput = document.getElementById('schedule-time');
+            
+            if (!messageInput.value) {
+                alert('Please enter a message first');
+                return;
+            }
+            
+            const now = new Date();
+            now.setMinutes(now.getMinutes() + minutes);
+            
+            // Format for datetime-local input
+            const formatted = now.toISOString().slice(0, 16);
+            timeInput.value = formatted;
+            
+            // Auto-schedule
+            scheduleMessageFromUI();
+        }
+        
+        // Update time input to current time on focus
+        document.addEventListener('DOMContentLoaded', function() {
+            const timeInput = document.getElementById('schedule-time');
+            timeInput.addEventListener('focus', function() {
+                if (!this.value) {
+                    const now = new Date();
+                    now.setMinutes(now.getMinutes() + 1); // Default to 1 minute from now
+                    this.value = now.toISOString().slice(0, 16);
+                }
+            });
+        });
+    </script>
+</body>
+</html>
