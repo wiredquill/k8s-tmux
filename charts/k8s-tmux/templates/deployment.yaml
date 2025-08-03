@@ -46,18 +46,37 @@ spec:
         - name: wiredquill-storage
           mountPath: /mnt/WiredQuill
         {{- end }}
+              volumeMounts:
+        {{- if .Values.mounts.k8sTmux.enabled }}
+        - name: k8s-tmux-nfs
+          mountPath: /mnt/k8s-tmux
+        {{- end }}
+        {{- if .Values.mounts.wiredQuill.enabled }}
+        - name: wiredquill-nfs
+          mountPath: /mnt/WiredQuill
+        {{- end }}
+        {{- if .Values.persistence.enabled }}
+        - name: app-storage
+          mountPath: /mnt/storage
+        {{- end }}
       volumes:
-      {{- if .Values.persistence.k8sTmux.enabled }}
-      - name: k8s-tmux-storage
-        persistentVolumeClaim:
-          claimName: {{ include "k8s-tmux.fullname" . }}-k8s-tmux-pvc
+      {{- if .Values.mounts.k8sTmux.enabled }}
+      - name: k8s-tmux-nfs
+        nfs:
+          server: {{ .Values.mounts.k8sTmux.nfs.server }}
+          path: {{ .Values.mounts.k8sTmux.nfs.path }}
       {{- end }}
-      {{- if .Values.persistence.wiredQuill.enabled }}
-      - name: wiredquill-storage
-        persistentVolumeClaim:
-          claimName: {{ include "k8s-tmux.fullname" . }}-wiredquill-pvc
+      {{- if .Values.mounts.wiredQuill.enabled }}
+      - name: wiredquill-nfs
+        nfs:
+          server: {{ .Values.mounts.wiredQuill.nfs.server }}
+          path: {{ .Values.mounts.wiredQuill.nfs.path }}
       {{- end }}
-      {{- with .Values.nodeSelector }}
+      {{- if .Values.persistence.enabled }}
+      - name: app-storage
+        persistentVolumeClaim:
+          claimName: {{ include "k8s-tmux.fullname" . }}-storage-pvc
+      {{- end }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
