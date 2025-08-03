@@ -13,22 +13,6 @@ questions:
     type: string
     label: Namespace Name
 
-- variable: replicaCount
-  default: 1
-  description: "Number of replicas to deploy"
-  type: int
-  label: Replica Count
-  min: 1
-  max: 3
-  group: "Application Configuration"
-
-- variable: image.tag
-  default: "latest"
-  description: "Container image tag"
-  type: string
-  label: Image Tag
-  group: "Application Configuration"
-
 - variable: service.type
   default: "LoadBalancer"
   description: "Service type for exposing the application"
@@ -68,33 +52,6 @@ questions:
     type: string
     label: Ingress Class
 
-- variable: resources.requests.cpu
-  default: "250m"
-  description: "CPU request"
-  type: string
-  label: CPU Request
-  group: "Resource Configuration"
-
-- variable: resources.requests.memory
-  default: "512Mi"
-  description: "Memory request"
-  type: string
-  label: Memory Request
-  group: "Resource Configuration"
-
-- variable: resources.limits.cpu
-  default: "1000m"
-  description: "CPU limit"
-  type: string
-  label: CPU Limit
-  group: "Resource Configuration"
-
-- variable: resources.limits.memory
-  default: "2Gi"
-  description: "Memory limit"
-  type: string
-  label: Memory Limit
-  group: "Resource Configuration"
 
 - variable: persistence.k8sTmux.enabled
   default: true
@@ -129,7 +86,7 @@ questions:
   show_subquestion_if: true
   subquestions:
   - variable: persistence.wiredQuill.size
-    default: "100Gi"
+    default: "10Gi"
     description: "Size of the WiredQuill persistent volume"
     type: string
     label: WiredQuill Storage Size
