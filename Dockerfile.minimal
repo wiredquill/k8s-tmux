@@ -1,0 +1,31 @@
+FROM opensuse/leap:15.6
+
+# Test minimal build first
+RUN zypper refresh && \
+    zypper install -y \
+    curl \
+    wget \
+    git \
+    vim \
+    tmux \
+    zsh \
+    sudo \
+    tar \
+    gzip \
+    unzip \
+    && zypper clean -a
+
+# Test kubectl install
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
+    install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl && \
+    rm kubectl
+
+# Create user
+RUN useradd -m -s /bin/zsh dev && \
+    echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+USER dev
+WORKDIR /home/dev
+
+# Simple test command
+CMD ["/bin/bash", "-c", "echo 'Minimal build successful' && kubectl version --client"]

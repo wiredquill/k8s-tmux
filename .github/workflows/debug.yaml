@@ -1,0 +1,45 @@
+name: Debug Build
+
+permissions:
+  contents: read
+  packages: write
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'Dockerfile.minimal'
+      - '.github/workflows/debug.yaml'
+
+jobs:
+  debug-build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Debug - List files
+      run: |
+        echo "=== Repository Contents ==="
+        ls -la
+        echo ""
+        echo "=== Dockerfile.minimal contents ==="
+        cat Dockerfile.minimal
+        echo ""
+
+    - name: Test minimal build (no push)
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.minimal
+        platforms: linux/amd64
+        push: false
+        tags: k8s-tmux:debug
+
+    - name: Debug success
+      run: |
+        echo "✅ Minimal build successful!"
+        echo "Now we can identify what's breaking the main Dockerfile"
