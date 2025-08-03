@@ -5,7 +5,7 @@ RUN zypper refresh && \
     zypper install -y \
     curl \
     wget \
-    git-core \
+    git \
     bash-completion \
     vim \
     nano \
@@ -21,13 +21,14 @@ RUN zypper refresh && \
     python3-pip \
     patterns-devel-base-devel_basis \
     ca-certificates \
-    nfs-client \
-    xclip \
-    iputils \
     mc \
     tree \
-    btop \
     && zypper clean -a
+
+# Install additional tools that might not be in main repos
+RUN zypper install -y iputils || echo "iputils not available, skipping" && \
+    zypper install -y nfs-client || echo "nfs-client not available, skipping" && \
+    zypper install -y xclip || echo "xclip not available, skipping"
 
 # Install kubectl
 RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
@@ -47,11 +48,28 @@ RUN curl -L https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_a
     mv /tmp/k9s /usr/local/bin/k9s && \
     chmod +x /usr/local/bin/k9s
 
-# Install fastfetch
-RUN curl -L https://github.com/fastfetch-cli/fastfetch/releases/latest/download/fastfetch-linux-amd64.tar.gz | tar xz -C /tmp && \
-    mv /tmp/fastfetch-linux-amd64/usr/bin/fastfetch /usr/local/bin/fastfetch && \
-    chmod +x /usr/local/bin/fastfetch && \
+# Install fastfetch (with error handling)
+RUN curl -L https://github.com/fastfetch-cli/fastfetch/releases/latest/download/fastfetch-linux-amd64.tar.gz | tar xz -C /tmp || echo "fastfetch download failed" && \
+    if [ -f /tmp/fastfetch-linux-amd64/usr/bin/fastfetch ]; then \
+        mv /tmp/fastfetch-linux-amd64/usr/bin/fastfetch /usr/local/bin/fastfetch && \
+        chmod +x /usr/local/bin/fastfetch; \
+    else \
+        echo "fastfetch not found, creating placeholder"; \
+        echo '#!/bin/bash\necho "fastfetch not available"' > /usr/local/bin/fastfetch && \
+        chmod +x /usr/local/bin/fastfetch; \
+    fi && \
     rm -rf /tmp/fastfetch-linux-amd64
+
+# Install btop (alternative system monitor)
+RUN curl -L https://github.com/aristocratos/btop/releases/latest/download/btop-x86_64-linux-musl.tbz | tar xj -C /tmp || echo "btop download failed" && \
+    if [ -f /tmp/btop/bin/btop ]; then \
+        mv /tmp/btop/bin/btop /usr/local/bin/btop && \
+        chmod +x /usr/local/bin/btop; \
+    else \
+        echo "btop not found, using htop alternative"; \
+        zypper install -y htop || echo "htop also not available"; \
+    fi && \
+    rm -rf /tmp/btop
 
 # Install ttyd for web terminal access
 RUN curl -L https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64 -o /usr/local/bin/ttyd && \
