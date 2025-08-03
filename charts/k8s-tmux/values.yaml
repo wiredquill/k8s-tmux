@@ -37,24 +37,26 @@ resources:
     cpu: 250m
     memory: 512Mi
 
-persistence:
+# Direct NFS mounts (no PVCs needed)
+mounts:
   k8sTmux:
     enabled: true
-    storageClass: ""
-    accessMode: ReadWriteMany
-    size: 100Gi
     nfs:
       server: 10.0.0.10
       path: /volume1/k8s/k8s-tmux
   
   wiredQuill:
     enabled: true
-    storageClass: ""
-    accessMode: ReadWriteMany
-    size: 100Gi
     nfs:
       server: 10.0.0.10
       path: /volume1/WiredQuill
+
+# Legacy persistence config (for optional PVC-based storage)
+persistence:
+  enabled: false
+  storageClass: ""
+  accessMode: ReadWriteMany
+  size: 100Gi
 
 nodeSelector: {}
 

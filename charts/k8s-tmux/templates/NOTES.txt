@@ -42,11 +42,11 @@
    - Shell: bash (with completion), zsh (oh-my-zsh)
 
 5. Shared Storage:
-{{- if .Values.persistence.k8sTmux.enabled }}
-   - k8s-tmux storage: {{ .Values.persistence.k8sTmux.nfs.server }}:{{ .Values.persistence.k8sTmux.nfs.path }}
+{{- if .Values.mounts.k8sTmux.enabled }}
+   - k8s-tmux storage: {{ .Values.mounts.k8sTmux.nfs.server }}:{{ .Values.mounts.k8sTmux.nfs.path }}
 {{- end }}
-{{- if .Values.persistence.wiredQuill.enabled }}
-   - WiredQuill storage: {{ .Values.persistence.wiredQuill.nfs.server }}:{{ .Values.persistence.wiredQuill.nfs.path }}
+{{- if .Values.mounts.wiredQuill.enabled }}
+   - WiredQuill storage: {{ .Values.mounts.wiredQuill.nfs.server }}:{{ .Values.mounts.wiredQuill.nfs.path }}
 {{- end }}
 
 6. To view logs:

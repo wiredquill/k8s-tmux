@@ -38,15 +38,6 @@ spec:
         - name: TERM
           value: {{ .Values.env.TERM | quote }}
         volumeMounts:
-        {{- if .Values.persistence.k8sTmux.enabled }}
-        - name: k8s-tmux-storage
-          mountPath: /mnt/k8s-tmux
-        {{- end }}
-        {{- if .Values.persistence.wiredQuill.enabled }}
-        - name: wiredquill-storage
-          mountPath: /mnt/WiredQuill
-        {{- end }}
-              volumeMounts:
         {{- if .Values.mounts.k8sTmux.enabled }}
         - name: k8s-tmux-nfs
           mountPath: /mnt/k8s-tmux
@@ -77,6 +68,7 @@ spec:
         persistentVolumeClaim:
           claimName: {{ include "k8s-tmux.fullname" . }}-storage-pvc
       {{- end }}
+      {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
