@@ -1,26 +1,24 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: k8s-tmux-ssh
+  name: k8s-tmux-proper
   namespace: ai-dev
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: k8s-tmux-ssh
+      app: k8s-tmux-proper
   template:
     metadata:
       labels:
-        app: k8s-tmux-ssh
+        app: k8s-tmux-proper
     spec:
       containers:
-      - name: ssh-terminal
-        image: alpine:latest
+      - name: k8s-tmux
+        image: k8s-tmux:latest
+        imagePullPolicy: Never
         ports:
-        - containerPort: 22
         - containerPort: 7681
-        command: ["/bin/sh"]
-        args: ["-c", "apk update && apk add --no-cache openssh-server bash sudo curl nano vim git && echo 'root:tmux123' | chpasswd && ssh-keygen -A && adduser -D -s /bin/bash tmux && echo 'tmux:tmux123' | chpasswd && echo 'tmux ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers && /usr/sbin/sshd -D"]
         volumeMounts:
         - name: k8s-tmux-storage
           mountPath: /mnt/k8s-tmux
@@ -29,6 +27,13 @@ spec:
         env:
         - name: TERM
           value: "xterm-256color"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
       volumes:
       - name: k8s-tmux-storage
         persistentVolumeClaim:
@@ -40,14 +45,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: k8s-tmux-ssh-service
+  name: k8s-tmux-proper-service
   namespace: ai-dev
 spec:
   selector:
-    app: k8s-tmux-ssh
+    app: k8s-tmux-proper
   ports:
-  - name: ssh
-    protocol: TCP
-    port: 22
-    targetPort: 22
+  - protocol: TCP
+    port: 80
+    targetPort: 7681
   type: LoadBalancer

@@ -1,0 +1,176 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: remote-mode-config
+  namespace: ai-dev
+data:
+  remote-mode-script.sh: |
+    #!/bin/bash
+
+    # Remote Mode Toggle Script for Claude AI Integration
+    NTFY_SERVER="https://ntfy.wiredquill.com"
+    NTFY_TOPIC="ai_communication"
+    REMOTE_MODE_FILE="/tmp/remote_mode_enabled"
+    LOG_FILE="/tmp/claude_monitor.log"
+
+    # Function to send notification to ntfy
+    send_ntfy() {
+        local title="$1"
+        local message="$2"
+        local priority="${3:-3}"
+        
+        curl -s -X POST "$NTFY_SERVER/$NTFY_TOPIC" \
+            -H "Title: $title" \
+            -H "Priority: $priority" \
+            -d "$message" >> "$LOG_FILE" 2>&1
+    }
+
+    # Function to toggle remote mode
+    toggle_remote_mode() {
+        if [ -f "$REMOTE_MODE_FILE" ]; then
+            rm "$REMOTE_MODE_FILE"
+            echo "🔴 Remote mode DISABLED"
+            send_ntfy "Claude Remote Mode" "Remote mode disabled" 2
+        else
+            touch "$REMOTE_MODE_FILE"
+            echo "🟢 Remote mode ENABLED"
+            echo "Claude responses will be sent to ntfy when multiple options are available"
+            send_ntfy "Claude Remote Mode" "Remote mode enabled - monitoring Claude responses" 4
+        fi
+    }
+
+    # Function to check if remote mode is enabled
+    is_remote_mode() {
+        [ -f "$REMOTE_MODE_FILE" ]
+    }
+
+    # Function to monitor Claude output and detect multiple responses
+    monitor_claude_responses() {
+        if ! is_remote_mode; then
+            return
+        fi
+        
+        local responses="$1"
+        if [ -n "$responses" ]; then
+            send_ntfy "Claude Options Available" "$responses" 5
+            echo "📱 Sent options to ntfy: $NTFY_TOPIC"
+        fi
+    }
+
+  init-remote.sh: |
+    #!/bin/bash
+    
+    # Install remote mode functionality
+    source /config/remote-mode-script.sh
+    
+    # Create remote mode toggle command
+    cat > /usr/local/bin/remote-toggle << 'EOF'
+    #!/bin/bash
+    source /config/remote-mode-script.sh
+    toggle_remote_mode
+    EOF
+    chmod +x /usr/local/bin/remote-toggle
+
+    # Create Claude response sender
+    cat > /usr/local/bin/send-claude-options << 'EOF'
+    #!/bin/bash
+    source /config/remote-mode-script.sh
+    if [ $# -eq 0 ]; then
+        echo "Usage: send-claude-options 'Option 1|Option 2|Option 3'"
+        exit 1
+    fi
+    monitor_claude_responses "$1"
+    EOF
+    chmod +x /usr/local/bin/send-claude-options
+
+    # Add to shell aliases and functions
+    echo "alias rmtoggle='remote-toggle'" >> ~/.bashrc
+    echo "alias send-options='send-claude-options'" >> ~/.bashrc
+    
+    # Add remote mode status to prompt
+    echo 'export PS1="\[\033[1;32m\]\u@\h\[\033[00m\]:\[\033[1;34m\]\w\[\033[00m\]$([ -f /tmp/remote_mode_enabled ] && echo \"\[\033[1;31m\][REMOTE]\[\033[00m\]\")$ "' >> ~/.bashrc
+    
+    source ~/.bashrc
+    
+    echo "📡 Remote mode functionality initialized"
+    echo "Commands available:"
+    echo "  remote-toggle    - Toggle remote mode on/off"  
+    echo "  rmtoggle         - Alias for remote-toggle"
+    echo "  send-claude-options 'opt1|opt2|opt3' - Send options to ntfy"
+    echo ""
+    echo "🎯 NTFY Topic: ai_communication"
+    echo "🌐 NTFY Server: https://ntfy.wiredquill.com"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux-opensuse
+  namespace: ai-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux-opensuse
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux-opensuse
+    spec:
+      containers:
+      - name: opensuse-terminal
+        image: opensuse/leap:15.6
+        ports:
+        - containerPort: 7681
+        command: ["/bin/bash"]
+        args: ["-c", "
+          zypper refresh && 
+          zypper install -y curl wget git bash-completion vim nano tmux zsh sudo openssh-clients tar gzip unzip jq python3 python3-pip ca-certificates mc tree patterns-devel-base-devel_basis &&
+          curl -L https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64 -o /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd &&
+          useradd -m -s /bin/bash dev && echo 'dev ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers &&
+          su - dev -c '/config/init-remote.sh' &&
+          cd /mnt/k8s-tmux &&
+          exec su - dev -c 'cd /mnt/k8s-tmux && ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin bash -l'
+        "]
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        - name: remote-config
+          mountPath: /config
+        env:
+        - name: TERM
+          value: "xterm-256color"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+      volumes:
+      - name: k8s-tmux-storage
+        persistentVolumeClaim:
+          claimName: k8s-tmux-k8s-tmux-pvc
+      - name: wiredquill-storage
+        persistentVolumeClaim:
+          claimName: k8s-tmux-wiredquill-pvc
+      - name: remote-config
+        configMap:
+          name: remote-mode-config
+          defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-opensuse-service
+  namespace: ai-dev
+spec:
+  selector:
+    app: k8s-tmux-opensuse
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 7681
+  type: LoadBalancer
