@@ -1,0 +1,178 @@
+name: Release Chart
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'charts/**'
+      - 'Dockerfile'
+      - '.github/workflows/release.yaml'
+  release:
+    types: [published]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ghcr.io/${{ github.repository }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=sha,prefix={{branch}}-
+
+    - name: Build and push
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  update-chart:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Configure Git
+      run: |
+        git config user.name "$GITHUB_ACTOR"
+        git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+
+    - name: Update Chart.yaml with new version
+      run: |
+        if [[ "${{ github.event_name }}" == "release" ]]; then
+          # Use the release tag as version
+          NEW_VERSION="${{ github.event.release.tag_name }}"
+          NEW_VERSION="${NEW_VERSION#v}" # Remove 'v' prefix if present
+        else
+          # Auto-increment patch version for pushes to main
+          CURRENT_VERSION=$(grep '^version:' charts/k8s-tmux/Chart.yaml | sed 's/version: //')
+          NEW_VERSION=$(echo $CURRENT_VERSION | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g')
+        fi
+        
+        # Update Chart.yaml
+        sed -i "s/^version:.*/version: $NEW_VERSION/" charts/k8s-tmux/Chart.yaml
+        
+        # Update appVersion to use the container image tag
+        if [[ "${{ github.event_name }}" == "release" ]]; then
+          APP_VERSION="${{ github.event.release.tag_name }}"
+        else
+          APP_VERSION="latest"
+        fi
+        sed -i "s/^appVersion:.*/appVersion: \"$APP_VERSION\"/" charts/k8s-tmux/Chart.yaml
+        
+        # Update default image tag in values.yaml
+        sed -i "s/tag: .*/tag: \"$APP_VERSION\"/" charts/k8s-tmux/values.yaml
+        
+        echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+        echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
+
+    - name: Package Helm Chart
+      run: |
+        helm package charts/k8s-tmux --destination .
+
+    - name: Create/Update Chart Repository
+      run: |
+        # Create gh-pages branch if it doesn't exist
+        if ! git ls-remote --exit-code origin gh-pages; then
+          git checkout --orphan gh-pages
+          git rm -rf .
+          echo "# Helm Chart Repository" > README.md
+          git add README.md
+          git commit -m "Initial gh-pages commit"
+          git push origin gh-pages
+          git checkout main
+        fi
+        
+        # Switch to gh-pages branch
+        git fetch origin gh-pages
+        git checkout gh-pages
+        
+        # Copy the packaged chart
+        cp k8s-tmux-${{ env.NEW_VERSION }}.tgz .
+        
+        # Update the index
+        helm repo index . --url https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+        
+        # Commit and push
+        git add .
+        git commit -m "Release chart version ${{ env.NEW_VERSION }}"
+        git push origin gh-pages
+        
+        git checkout main
+
+    - name: Commit Chart Updates
+      run: |
+        git add charts/k8s-tmux/Chart.yaml charts/k8s-tmux/values.yaml
+        if git diff --cached --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "chore: update chart to version ${{ env.NEW_VERSION }} with app version ${{ env.APP_VERSION }}"
+          git push origin main
+        fi
+
+    - name: Create GitHub Release for Chart
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: chart-v${{ env.NEW_VERSION }}
+        name: Chart Release v${{ env.NEW_VERSION }}
+        body: |
+          ## Helm Chart Release v${{ env.NEW_VERSION }}
+          
+          ### Changes
+          - Updated application version to ${{ env.APP_VERSION }}
+          - Container image: ghcr.io/${{ github.repository }}:${{ env.APP_VERSION }}
+          
+          ### Installation
+          ```bash
+          helm repo add k8s-tmux https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+          helm repo update
+          helm install k8s-tmux k8s-tmux/k8s-tmux --version ${{ env.NEW_VERSION }}
+          ```
+        files: |
+          k8s-tmux-${{ env.NEW_VERSION }}.tgz
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

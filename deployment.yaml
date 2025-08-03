@@ -1,0 +1,115 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: k8s-tmux-pv
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteMany
+  nfs:
+    server: 10.0.0.10
+    path: /volume1/k8s/k8s-tmux
+  persistentVolumeReclaimPolicy: Retain
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: wiredquill-pv
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteMany
+  nfs:
+    server: 10.0.0.10
+    path: /volume1/WiredQuill
+  persistentVolumeReclaimPolicy: Retain
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: k8s-tmux-pvc
+  namespace: ai-dev
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  volumeName: k8s-tmux-pv
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wiredquill-pvc
+  namespace: ai-dev
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  volumeName: wiredquill-pv
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-dev
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux
+  namespace: ai-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux
+    spec:
+      containers:
+      - name: k8s-tmux
+        image: k8s-tmux:latest
+        ports:
+        - containerPort: 7681
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        env:
+        - name: TERM
+          value: "xterm-256color"
+      volumes:
+      - name: k8s-tmux-storage
+        persistentVolumeClaim:
+          claimName: k8s-tmux-pvc
+      - name: wiredquill-storage
+        persistentVolumeClaim:
+          claimName: wiredquill-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-service
+  namespace: ai-dev
+spec:
+  selector:
+    app: k8s-tmux
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 7681
+  type: LoadBalancer

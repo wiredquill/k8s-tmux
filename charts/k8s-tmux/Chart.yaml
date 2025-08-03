@@ -1,0 +1,22 @@
+apiVersion: v2
+name: k8s-tmux
+description: A web-accessible tmux-based development environment for AI model interactions
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/your-username/k8s-tmux
+sources:
+  - https://github.com/your-username/k8s-tmux
+maintainers:
+  - name: WiredQuill
+    email: your-email@example.com
+keywords:
+  - tmux
+  - development
+  - ai
+  - terminal
+  - ttyd
+annotations:
+  catalog.cattle.io/certified: rancher
+  catalog.cattle.io/namespace: ai-dev
+  catalog.cattle.io/release-name: k8s-tmux

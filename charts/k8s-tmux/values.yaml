@@ -1,0 +1,81 @@
+# Default values for k8s-tmux
+replicaCount: 1
+
+image:
+  repository: k8s-tmux
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: LoadBalancer
+  port: 80
+  targetPort: 7681
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: k8s-tmux.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+persistence:
+  k8sTmux:
+    enabled: true
+    storageClass: ""
+    accessMode: ReadWriteMany
+    size: 100Gi
+    nfs:
+      server: 10.0.0.10
+      path: /volume1/k8s/k8s-tmux
+  
+  wiredQuill:
+    enabled: true
+    storageClass: ""
+    accessMode: ReadWriteMany
+    size: 100Gi
+    nfs:
+      server: 10.0.0.10
+      path: /volume1/WiredQuill
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+env:
+  TERM: "xterm-256color"
+
+# Security context
+securityContext: {}
+
+# Pod security context
+podSecurityContext: {}
+
+# Service account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Autoscaling (disabled by default for this use case)
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80

@@ -1,0 +1,166 @@
+questions:
+- variable: replicaCount
+  default: 1
+  description: "Number of replicas to deploy"
+  type: int
+  label: Replica Count
+  min: 1
+  max: 3
+  group: "Application Configuration"
+
+- variable: image.tag
+  default: "latest"
+  description: "Container image tag"
+  type: string
+  label: Image Tag
+  group: "Application Configuration"
+
+- variable: service.type
+  default: "LoadBalancer"
+  description: "Service type for exposing the application"
+  type: enum
+  label: Service Type
+  group: "Service Configuration"
+  options:
+    - "ClusterIP"
+    - "NodePort"
+    - "LoadBalancer"
+
+- variable: service.port
+  default: 80
+  description: "Service port"
+  type: int
+  label: Service Port
+  group: "Service Configuration"
+  min: 1
+  max: 65535
+
+- variable: ingress.enabled
+  default: false
+  description: "Enable ingress"
+  type: boolean
+  label: Enable Ingress
+  group: "Service Configuration"
+  show_subquestion_if: true
+  subquestions:
+  - variable: ingress.hosts[0].host
+    default: "k8s-tmux.local"
+    description: "Hostname for ingress"
+    type: hostname
+    label: Ingress Hostname
+  - variable: ingress.className
+    default: ""
+    description: "Ingress class name"
+    type: string
+    label: Ingress Class
+
+- variable: resources.requests.cpu
+  default: "250m"
+  description: "CPU request"
+  type: string
+  label: CPU Request
+  group: "Resource Configuration"
+
+- variable: resources.requests.memory
+  default: "512Mi"
+  description: "Memory request"
+  type: string
+  label: Memory Request
+  group: "Resource Configuration"
+
+- variable: resources.limits.cpu
+  default: "1000m"
+  description: "CPU limit"
+  type: string
+  label: CPU Limit
+  group: "Resource Configuration"
+
+- variable: resources.limits.memory
+  default: "2Gi"
+  description: "Memory limit"
+  type: string
+  label: Memory Limit
+  group: "Resource Configuration"
+
+- variable: persistence.k8sTmux.enabled
+  default: true
+  description: "Enable k8s-tmux persistent storage"
+  type: boolean
+  label: Enable k8s-tmux Storage
+  group: "Storage Configuration"
+  show_subquestion_if: true
+  subquestions:
+  - variable: persistence.k8sTmux.size
+    default: "100Gi"
+    description: "Size of the k8s-tmux persistent volume"
+    type: string
+    label: k8s-tmux Storage Size
+  - variable: persistence.k8sTmux.nfs.server
+    default: "10.0.0.10"
+    description: "NFS server for k8s-tmux storage"
+    type: string
+    label: k8s-tmux NFS Server
+  - variable: persistence.k8sTmux.nfs.path
+    default: "/volume1/k8s/k8s-tmux"
+    description: "NFS path for k8s-tmux storage"
+    type: string
+    label: k8s-tmux NFS Path
+
+- variable: persistence.wiredQuill.enabled
+  default: true
+  description: "Enable WiredQuill persistent storage"
+  type: boolean
+  label: Enable WiredQuill Storage
+  group: "Storage Configuration"
+  show_subquestion_if: true
+  subquestions:
+  - variable: persistence.wiredQuill.size
+    default: "100Gi"
+    description: "Size of the WiredQuill persistent volume"
+    type: string
+    label: WiredQuill Storage Size
+  - variable: persistence.wiredQuill.nfs.server
+    default: "10.0.0.10"
+    description: "NFS server for WiredQuill storage"
+    type: string
+    label: WiredQuill NFS Server
+  - variable: persistence.wiredQuill.nfs.path
+    default: "/volume1/WiredQuill"
+    description: "NFS path for WiredQuill storage"
+    type: string
+    label: WiredQuill NFS Path
+
+- variable: env.TERM
+  default: "xterm-256color"
+  description: "Terminal type environment variable"
+  type: string
+  label: Terminal Type
+  group: "Environment Configuration"
+
+- variable: serviceAccount.create
+  default: true
+  description: "Create a service account"
+  type: boolean
+  label: Create Service Account
+  group: "Security Configuration"
+
+- variable: nodeSelector
+  default: {}
+  description: "Node selector for pod assignment"
+  type: json
+  label: Node Selector
+  group: "Scheduling Configuration"
+
+- variable: tolerations
+  default: []
+  description: "Tolerations for pod assignment"
+  type: json
+  label: Tolerations
+  group: "Scheduling Configuration"
+
+- variable: affinity
+  default: {}
+  description: "Affinity rules for pod assignment"
+  type: json
+  label: Affinity
+  group: "Scheduling Configuration"
