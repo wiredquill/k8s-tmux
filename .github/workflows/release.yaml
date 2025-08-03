@@ -1,5 +1,11 @@
 name: Release Chart
 
+permissions:
+  contents: write
+  packages: write
+  pages: write
+  id-token: write
+
 on:
   push:
     branches:
@@ -67,6 +73,7 @@ jobs:
       with:
         fetch-depth: 0
         token: ${{ secrets.GITHUB_TOKEN }}
+        persist-credentials: true
 
     - name: Configure Git
       run: |
@@ -86,9 +93,16 @@ jobs:
           NEW_VERSION="${NEW_VERSION#v}" # Remove 'v' prefix if present
         else
           # Auto-increment patch version for pushes to main
-          CURRENT_VERSION=$(grep '^version:' charts/k8s-tmux/Chart.yaml | sed 's/version: //')
-          NEW_VERSION=$(echo $CURRENT_VERSION | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g')
+          CURRENT_VERSION=$(grep '^version:' charts/k8s-tmux/Chart.yaml | sed 's/version: //' | tr -d ' ')
+          if [[ -z "$CURRENT_VERSION" ]]; then
+            NEW_VERSION="0.1.0"
+          else
+            NEW_VERSION=$(echo $CURRENT_VERSION | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g')
+          fi
         fi
+        
+        echo "Current version: $CURRENT_VERSION"
+        echo "New version: $NEW_VERSION"
         
         # Update Chart.yaml
         sed -i "s/^version:.*/version: $NEW_VERSION/" charts/k8s-tmux/Chart.yaml
@@ -129,15 +143,19 @@ jobs:
         git checkout gh-pages
         
         # Copy the packaged chart
-        cp k8s-tmux-${{ env.NEW_VERSION }}.tgz .
+        cp k8s-tmux-${{ env.NEW_VERSION }}.tgz . || echo "Chart package not found, skipping"
         
         # Update the index
         helm repo index . --url https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
         
-        # Commit and push
+        # Commit and push if there are changes
         git add .
-        git commit -m "Release chart version ${{ env.NEW_VERSION }}"
-        git push origin gh-pages
+        if ! git diff --cached --quiet; then
+          git commit -m "Release chart version ${{ env.NEW_VERSION }}"
+          git push origin gh-pages
+        else
+          echo "No changes to commit"
+        fi
         
         git checkout main
 
