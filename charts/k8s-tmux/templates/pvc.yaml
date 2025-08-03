@@ -1,35 +1,20 @@
-{{- if .Values.persistence.k8sTmux.enabled }}
+{{- if .Values.persistence.enabled }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "k8s-tmux.fullname" . }}-k8s-tmux-pvc
+  name: {{ include "k8s-tmux.fullname" . }}-storage-pvc
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "k8s-tmux.labels" . | nindent 4 }}
 spec:
   accessModes:
-    - {{ .Values.persistence.k8sTmux.accessMode }}
+    - {{ .Values.persistence.accessMode }}
   resources:
     requests:
-      storage: {{ .Values.persistence.k8sTmux.size }}
-  volumeName: {{ include "k8s-tmux.fullname" . }}-k8s-tmux-pv
+      storage: {{ .Values.persistence.size }}
+  {{- if .Values.persistence.storageClass }}
+  storageClassName: {{ .Values.persistence.storageClass }}
+  {{- else }}
   storageClassName: ""
----
-{{- end }}
-{{- if .Values.persistence.wiredQuill.enabled }}
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ include "k8s-tmux.fullname" . }}-wiredquill-pvc
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "k8s-tmux.labels" . | nindent 4 }}
-spec:
-  accessModes:
-    - {{ .Values.persistence.wiredQuill.accessMode }}
-  resources:
-    requests:
-      storage: {{ .Values.persistence.wiredQuill.size }}
-  volumeName: {{ include "k8s-tmux.fullname" . }}-wiredquill-pv
-  storageClassName: ""
+  {{- end }}
 {{- end }}
