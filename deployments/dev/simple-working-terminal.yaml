@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: simple-config
+  namespace: ai-dev
+data:
+  setup.sh: |
+    #!/bin/bash
+    
+    # Minimal setup
+    useradd -m -s /bin/bash dev
+    echo 'dev ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+    
+    # Create tmux directory
+    mkdir -p /run/tmux
+    chown dev:dev /run/tmux
+    
+    # Simple remote toggle
+    cat > /usr/local/bin/remote-toggle << 'EOF'
+    #!/bin/bash
+    if [ -f /tmp/remote_mode_enabled ]; then
+        rm /tmp/remote_mode_enabled
+        echo "🔴 Remote mode DISABLED"
+        curl -s -X POST "https://ntfy.wiredquill.com/ai_communication" -H "Title: Claude Remote Mode" -d "Remote mode disabled"
+    else
+        touch /tmp/remote_mode_enabled
+        echo "🟢 Remote mode ENABLED" 
+        curl -s -X POST "https://ntfy.wiredquill.com/ai_communication" -H "Title: Claude Remote Mode" -d "Remote mode enabled"
+    fi
+    EOF
+    chmod +x /usr/local/bin/remote-toggle
+    
+    # Setup dev user environment
+    su - dev -c "
+        echo 'alias k=kubectl' >> ~/.bashrc
+        echo 'alias ll=\"ls -la\"' >> ~/.bashrc
+        echo 'alias rmtoggle=remote-toggle' >> ~/.bashrc
+        echo 'export PS1=\"\u@\h:\w\\\$([ -f /tmp/remote_mode_enabled ] && echo \"[REMOTE]\")$ \"' >> ~/.bashrc
+    "
+    
+    echo "✅ Simple terminal ready!"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux-simple
+  namespace: ai-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux-simple
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux-simple
+    spec:
+      containers:
+      - name: simple-terminal
+        image: opensuse/leap:15.6
+        ports:
+        - containerPort: 7681
+        command: ["/bin/bash"]
+        args: 
+        - "-c"
+        - |
+          # Only install absolutely essential packages
+          zypper refresh && zypper in -y curl tmux sudo &&
+          
+          # Get ttyd
+          curl -L https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64 -o /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd &&
+          
+          # Setup
+          /config/setup.sh &&
+          
+          # Start shared tmux session
+          cd /mnt/k8s-tmux &&
+          su - dev -c 'cd /mnt/k8s-tmux && tmux new-session -d -s main bash' &&
+          exec /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin su - dev -c 'tmux attach-session -t main'
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: simple-config
+          mountPath: /config
+        env:
+        - name: TERM
+          value: "xterm-256color"
+        resources:
+          limits:
+            cpu: 500m
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: simple-config
+        configMap:
+          name: simple-config
+          defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-simple-service
+  namespace: ai-dev
+spec:
+  selector:
+    app: k8s-tmux-simple
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 7681
+  type: LoadBalancer

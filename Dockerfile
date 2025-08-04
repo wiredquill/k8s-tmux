@@ -87,6 +87,31 @@ RUN curl -L https://github.com/aristocratos/btop/releases/latest/download/btop-x
 RUN curl -L https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64 -o /usr/local/bin/ttyd && \
     chmod +x /usr/local/bin/ttyd
 
+# Install GitHub CLI (available in zypper)
+RUN zypper install -y gh
+
+# Create remote mode script
+RUN cat > /usr/local/bin/remote-toggle << 'EOF'
+#!/bin/bash
+NTFY_SERVER="https://ntfy.wiredquill.com"
+NTFY_TOPIC="ai_communication"
+REMOTE_MODE_FILE="/tmp/remote_mode_enabled"
+
+if [ -f "$REMOTE_MODE_FILE" ]; then
+    rm "$REMOTE_MODE_FILE"
+    echo "🔴 Remote mode DISABLED"
+    curl -s -X POST "$NTFY_SERVER/$NTFY_TOPIC" -H "Title: Claude Remote Mode" -d "Remote mode disabled"
+else
+    touch "$REMOTE_MODE_FILE"
+    echo "🟢 Remote mode ENABLED"
+    curl -s -X POST "$NTFY_SERVER/$NTFY_TOPIC" -H "Title: Claude Remote Mode" -d "Remote mode enabled"
+fi
+EOF
+RUN chmod +x /usr/local/bin/remote-toggle
+
+# Create tmux run directory
+RUN mkdir -p /run/tmux && chown -R dev:dev /run/tmux
+
 # Create user
 RUN useradd -m -s /bin/zsh dev && \
     echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
@@ -108,7 +133,9 @@ RUN echo 'source /etc/bash_completion' >> ~/.bashrc && \
     echo 'alias kn=kubens' >> ~/.bashrc && \
     echo 'alias ll="ls -la"' >> ~/.bashrc && \
     echo 'alias la="ls -A"' >> ~/.bashrc && \
-    echo 'alias l="ls -CF"' >> ~/.bashrc
+    echo 'alias l="ls -CF"' >> ~/.bashrc && \
+    echo 'alias rmtoggle="remote-toggle"' >> ~/.bashrc && \
+    echo 'export PS1="\[\033[1;32m\]\u@\h\[\033[00m\]:\[\033[1;34m\]\w\[\033[00m\]\$([ -f /tmp/remote_mode_enabled ] && echo \"\[\033[1;31m\][REMOTE]\[\033[00m\]\")$ "' >> ~/.bashrc
 
 # Configure zsh with completion and aliases
 RUN echo 'source <(kubectl completion zsh)' >> ~/.zshrc && \

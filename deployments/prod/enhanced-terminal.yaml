@@ -1,0 +1,502 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-tmux
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: terminal-config
+  namespace: k8s-tmux
+data:
+  terminal.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>K8s-TMux Terminal</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {
+                margin: 0;
+                padding: 10px;
+                background: #1a1a1a;
+                font-family: 'Courier New', monospace;
+                color: #00ff00;
+                overflow: hidden;
+            }
+            
+            .app-container {
+                border: 5px solid var(--session-color, #00ff00);
+                border-radius: 10px;
+                height: 98vh;
+                display: flex;
+                flex-direction: column;
+                background: #000;
+                box-shadow: 0 0 20px var(--session-color, #00ff00);
+            }
+            
+            .header {
+                background: var(--session-color, #00ff00);
+                color: #000;
+                padding: 10px;
+                text-align: center;
+                font-weight: bold;
+                font-size: 18px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                flex-shrink: 0;
+            }
+            
+            .session-title {
+                flex-grow: 1;
+                font-size: 20px;
+                font-weight: bold;
+            }
+            
+            .controls {
+                display: flex;
+                gap: 10px;
+                align-items: center;
+            }
+            
+            .btn {
+                background: #333;
+                color: #fff;
+                border: 1px solid var(--session-color, #00ff00);
+                padding: 5px 10px;
+                border-radius: 3px;
+                cursor: pointer;
+                font-size: 12px;
+            }
+            
+            .btn:hover {
+                background: var(--session-color, #00ff00);
+                color: #000;
+            }
+            
+            .terminal-container {
+                flex-grow: 1;
+                position: relative;
+                border: 2px solid var(--session-color, #00ff00);
+                border-radius: 5px;
+                margin: 5px;
+                overflow: hidden;
+            }
+            
+            .terminal-frame {
+                width: 100%;
+                height: 100%;
+                border: none;
+                background: #000;
+            }
+            
+            .config-panel {
+                position: absolute;
+                top: 50px;
+                right: 10px;
+                background: #222;
+                border: 2px solid var(--session-color, #00ff00);
+                border-radius: 5px;
+                padding: 15px;
+                display: none;
+                z-index: 1000;
+                min-width: 300px;
+            }
+            
+            .config-panel h3 {
+                margin-top: 0;
+                color: var(--session-color, #00ff00);
+            }
+            
+            .config-row {
+                margin: 10px 0;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            
+            .config-row label {
+                min-width: 100px;
+                color: #ccc;
+            }
+            
+            .config-row input, .config-row select {
+                flex-grow: 1;
+                background: #333;
+                color: #fff;
+                border: 1px solid var(--session-color, #00ff00);
+                padding: 5px;
+                border-radius: 3px;
+            }
+            
+            .file-drop-zone {
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: rgba(0, 255, 0, 0.1);
+                border: 3px dashed var(--session-color, #00ff00);
+                display: none;
+                align-items: center;
+                justify-content: center;
+                font-size: 24px;
+                z-index: 999;
+            }
+            
+            .color-red { --session-color: #ff4444; }
+            .color-blue { --session-color: #4444ff; }
+            .color-green { --session-color: #44ff44; }
+            .color-yellow { --session-color: #ffff44; }
+            .color-purple { --session-color: #ff44ff; }
+            .color-cyan { --session-color: #44ffff; }
+            .color-orange { --session-color: #ff8844; }
+        </style>
+    </head>
+    <body>
+        <div class="app-container" id="appContainer">
+            <div class="header">
+                <div class="controls">
+                    <button class="btn" onclick="downloadFile()">📥 Download</button>
+                    <input type="file" id="fileInput" style="display: none" onchange="uploadFile()" multiple>
+                    <button class="btn" onclick="document.getElementById('fileInput').click()">📤 Upload</button>
+                </div>
+                <div class="session-title" id="sessionTitle">K8s-TMux Terminal</div>
+                <div class="controls">
+                    <button class="btn" onclick="toggleRemoteMode()">📡 Remote</button>
+                    <button class="btn" onclick="toggleConfig()">⚙️ Config</button>
+                </div>
+            </div>
+            
+            <div class="config-panel" id="configPanel">
+                <h3>Terminal Configuration</h3>
+                <div class="config-row">
+                    <label>Session Title:</label>
+                    <input type="text" id="titleInput" value="K8s-TMux Terminal" onchange="updateTitle()">
+                </div>
+                <div class="config-row">
+                    <label>Border Color:</label>
+                    <select id="colorSelect" onchange="updateColor()">
+                        <option value="color-green">Green</option>
+                        <option value="color-red">Red</option>
+                        <option value="color-blue">Blue</option>
+                        <option value="color-yellow">Yellow</option>
+                        <option value="color-purple">Purple</option>
+                        <option value="color-cyan">Cyan</option>
+                        <option value="color-orange">Orange</option>
+                    </select>
+                </div>
+                <div class="config-row">
+                    <label>NTFY Server:</label>
+                    <input type="text" id="ntfyServer" value="https://ntfy.wiredquill.com" onchange="updateNtfyConfig()">
+                </div>
+                <div class="config-row">
+                    <label>NTFY Topic:</label>
+                    <input type="text" id="ntfyTopic" value="ai_communication" onchange="updateNtfyConfig()">
+                </div>
+                <div class="config-row">
+                    <button class="btn" onclick="saveConfig()" style="width: 100%;">💾 Save Configuration</button>
+                </div>
+            </div>
+            
+            <div class="terminal-container">
+                <iframe class="terminal-frame" src="/terminal" id="terminalFrame"></iframe>
+                <div class="file-drop-zone" id="dropZone">
+                    Drop files here to upload
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            // Load saved configuration
+            function loadConfig() {
+                const title = localStorage.getItem('sessionTitle') || 'K8s-TMux Terminal';
+                const color = localStorage.getItem('sessionColor') || 'color-green';
+                const ntfyServer = localStorage.getItem('ntfyServer') || 'https://ntfy.wiredquill.com';
+                const ntfyTopic = localStorage.getItem('ntfyTopic') || 'ai_communication';
+                
+                document.getElementById('sessionTitle').textContent = title;
+                document.getElementById('titleInput').value = title;
+                document.getElementById('colorSelect').value = color;
+                document.getElementById('ntfyServer').value = ntfyServer;
+                document.getElementById('ntfyTopic').value = ntfyTopic;
+                document.getElementById('appContainer').className = 'app-container ' + color;
+            }
+            
+            function updateTitle() {
+                const title = document.getElementById('titleInput').value;
+                document.getElementById('sessionTitle').textContent = title;
+                localStorage.setItem('sessionTitle', title);
+            }
+            
+            function updateColor() {
+                const color = document.getElementById('colorSelect').value;
+                document.getElementById('appContainer').className = 'app-container ' + color;
+                localStorage.setItem('sessionColor', color);
+            }
+            
+            function updateNtfyConfig() {
+                const server = document.getElementById('ntfyServer').value;
+                const topic = document.getElementById('ntfyTopic').value;
+                localStorage.setItem('ntfyServer', server);
+                localStorage.setItem('ntfyTopic', topic);
+                
+                // Send config to terminal
+                fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ntfyServer: server, ntfyTopic: topic })
+                });
+            }
+            
+            function toggleConfig() {
+                const panel = document.getElementById('configPanel');
+                panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+            }
+            
+            function toggleRemoteMode() {
+                fetch('/api/remote-toggle', { method: 'POST' });
+            }
+            
+            function saveConfig() {
+                alert('Configuration saved!');
+                document.getElementById('configPanel').style.display = 'none';
+            }
+            
+            // File upload/download
+            function uploadFile() {
+                const files = document.getElementById('fileInput').files;
+                for (let file of files) {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    
+                    fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    }).then(response => {
+                        if (response.ok) {
+                            alert(`Uploaded: ${file.name}`);
+                        }
+                    });
+                }
+            }
+            
+            function downloadFile() {
+                const filename = prompt('Enter filename to download:');
+                if (filename) {
+                    window.open(`/api/download/${filename}`);
+                }
+            }
+            
+            // Drag and drop
+            document.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                document.getElementById('dropZone').style.display = 'flex';
+            });
+            
+            document.addEventListener('dragleave', (e) => {
+                if (e.clientX === 0 && e.clientY === 0) {
+                    document.getElementById('dropZone').style.display = 'none';
+                }
+            });
+            
+            document.addEventListener('drop', (e) => {
+                e.preventDefault();
+                document.getElementById('dropZone').style.display = 'none';
+                
+                const files = e.dataTransfer.files;
+                for (let file of files) {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    
+                    fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    }).then(response => {
+                        if (response.ok) {
+                            alert(`Uploaded: ${file.name}`);
+                        }
+                    });
+                }
+            });
+            
+            // Load config on page load
+            loadConfig();
+        </script>
+    </body>
+    </html>
+
+  server.js: |
+    const express = require('express');
+    const multer = require('multer');
+    const path = require('path');
+    const fs = require('fs');
+    const { spawn } = require('child_process');
+    
+    const app = express();
+    const upload = multer({ dest: '/mnt/k8s-tmux/uploads/' });
+    
+    app.use(express.json());
+    app.use(express.static('.'));
+    
+    // Serve the custom terminal UI
+    app.get('/', (req, res) => {
+        res.sendFile('/config/terminal.html');
+    });
+    
+    // Proxy to ttyd terminal
+    app.get('/terminal', (req, res) => {
+        res.redirect('http://localhost:7681');
+    });
+    
+    // Remote mode toggle
+    app.post('/api/remote-toggle', (req, res) => {
+        spawn('/usr/local/bin/remote-toggle', [], { stdio: 'inherit' });
+        res.json({ status: 'toggled' });
+    });
+    
+    // Update NTFY configuration
+    app.post('/api/config', (req, res) => {
+        const { ntfyServer, ntfyTopic } = req.body;
+        
+        // Update the remote-toggle script with new config
+        const script = `#!/bin/bash
+    NTFY_SERVER="${ntfyServer}"
+    NTFY_TOPIC="${ntfyTopic}"
+    REMOTE_MODE_FILE="/tmp/remote_mode_enabled"
+    
+    if [ -f "$REMOTE_MODE_FILE" ]; then
+        rm "$REMOTE_MODE_FILE"
+        echo "🔴 Remote mode DISABLED"
+        curl -s -X POST "$NTFY_SERVER/$NTFY_TOPIC" -H "Title: Claude Remote Mode" -d "Remote mode disabled"
+    else
+        touch "$REMOTE_MODE_FILE"
+        echo "🟢 Remote mode ENABLED"
+        curl -s -X POST "$NTFY_SERVER/$NTFY_TOPIC" -H "Title: Claude Remote Mode" -d "Remote mode enabled"
+    fi`;
+        
+        fs.writeFileSync('/usr/local/bin/remote-toggle', script);
+        fs.chmodSync('/usr/local/bin/remote-toggle', 0o755);
+        
+        res.json({ status: 'updated' });
+    });
+    
+    // File upload
+    app.post('/api/upload', upload.single('file'), (req, res) => {
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+        
+        const finalPath = path.join('/mnt/k8s-tmux/', req.file.originalname);
+        fs.renameSync(req.file.path, finalPath);
+        
+        res.json({ 
+            message: 'File uploaded successfully',
+            filename: req.file.originalname,
+            path: finalPath
+        });
+    });
+    
+    // File download
+    app.get('/api/download/:filename', (req, res) => {
+        const filepath = path.join('/mnt/k8s-tmux/', req.params.filename);
+        
+        if (fs.existsSync(filepath)) {
+            res.download(filepath);
+        } else {
+            res.status(404).json({ error: 'File not found' });
+        }
+    });
+    
+    app.listen(8080, () => {
+        console.log('Enhanced terminal UI running on port 8080');
+    });
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux
+  namespace: k8s-tmux
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux
+    spec:
+      containers:
+      - name: k8s-tmux
+        image: ghcr.io/wiredquill/k8s-tmux:latest
+        ports:
+        - containerPort: 7681
+        - containerPort: 8080
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - |
+          # Create uploads directory
+          mkdir -p /mnt/k8s-tmux/uploads
+          
+          # Install Node.js for the web UI
+          zypper install -y nodejs npm
+          npm install -g express multer
+          
+          # Start the web UI server
+          cd /config && node server.js &
+          
+          # Start shared tmux session with colors enabled
+          cd /mnt/k8s-tmux &&
+          tmux new-session -d -s main 'export TERM=xterm-256color && bash' &&
+          exec /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin tmux attach-session -t main
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        - name: terminal-config
+          mountPath: /config
+        env:
+        - name: TERM
+          value: "xterm-256color"
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: wiredquill-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/WiredQuill
+      - name: terminal-config
+        configMap:
+          name: terminal-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-service
+  namespace: k8s-tmux
+spec:
+  selector:
+    app: k8s-tmux
+  ports:
+  - name: web-ui
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+  - name: terminal
+    protocol: TCP
+    port: 7681
+    targetPort: 7681
+  type: LoadBalancer

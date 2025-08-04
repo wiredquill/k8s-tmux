@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-tmux
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux
+  namespace: k8s-tmux
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux
+    spec:
+      containers:
+      - name: k8s-tmux
+        image: ghcr.io/wiredquill/k8s-tmux:latest
+        ports:
+        - containerPort: 7681
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - |
+          # Start shared tmux session as root for now
+          cd /mnt/k8s-tmux &&
+          tmux new-session -d -s main bash &&
+          exec /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin tmux attach-session -t main
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        env:
+        - name: TERM
+          value: "xterm-256color"
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: wiredquill-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/WiredQuill
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-service
+  namespace: k8s-tmux
+spec:
+  selector:
+    app: k8s-tmux
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 7681
+  type: LoadBalancer

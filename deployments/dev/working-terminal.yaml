@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: production-config
+  name: working-config
   namespace: ai-dev
 data:
   remote-mode-script.sh: |
@@ -29,22 +29,22 @@ data:
         fi
     }
 
-  init-production.sh: |
+  init-working.sh: |
     #!/bin/bash
     
     # Setup remote mode
     source /config/remote-mode-script.sh
     
-    cat > /usr/local/bin/remote-toggle << 'EOF'
+    sudo tee /usr/local/bin/remote-toggle > /dev/null << 'EOF'
     #!/bin/bash
     source /config/remote-mode-script.sh
     toggle_remote_mode
     EOF
-    chmod +x /usr/local/bin/remote-toggle
+    sudo chmod +x /usr/local/bin/remote-toggle
 
     # Setup kubectl config combiner
     mkdir -p ~/.kube
-    cat > /usr/local/bin/kube-combine << 'EOF'
+    sudo tee /usr/local/bin/kube-combine > /dev/null << 'EOF'
     #!/bin/bash
     KUBE_DIR="/mnt/k8s-tmux/kube"
     if [ -d "$KUBE_DIR" ]; then
@@ -59,27 +59,18 @@ data:
         fi
     fi
     EOF
-    chmod +x /usr/local/bin/kube-combine
-
-    # Setup Claude Code client with API key from secret
-    if [ -f /secrets/claude-api-key ]; then
-        echo "export ANTHROPIC_API_KEY=$(cat /secrets/claude-api-key)" >> ~/.bashrc
-        echo "✅ Claude API key configured from secret"
-    else
-        echo "⚠️  Claude API key not found. Set it with: kubectl create secret generic claude-secrets --from-literal=claude-api-key=YOUR_KEY -n ai-dev"
-    fi
+    sudo chmod +x /usr/local/bin/kube-combine
 
     # Setup GitHub CLI with token from secret
     if [ -f /secrets/github-token ]; then
-        echo "$(cat /secrets/github-token)" | gh auth login --with-token
+        echo "$(cat /secrets/github-token)" | gh auth login --with-token 2>/dev/null
         echo "✅ GitHub authenticated from secret"
     else
-        echo "⚠️  GitHub token not found. Set it with: kubectl create secret generic github-secrets --from-literal=github-token=YOUR_TOKEN -n ai-dev"
-        echo "💡 Or run: gh auth login"
+        echo "⚠️  GitHub token not found. Run: gh auth login"
     fi
 
     # Easy package installer
-    cat > /usr/local/bin/easy-install << 'EOF'
+    sudo tee /usr/local/bin/easy-install > /dev/null << 'EOF'
     #!/bin/bash
     if [ $# -eq 0 ]; then
         echo "Usage: easy-install <package1> [package2] ..."
@@ -94,7 +85,11 @@ data:
         echo "💡 Try: zypper search <package-name>"
     fi
     EOF
-    chmod +x /usr/local/bin/easy-install
+    sudo chmod +x /usr/local/bin/easy-install
+
+    # Fix tmux directory
+    sudo mkdir -p /run/tmux
+    sudo chown dev:dev /run/tmux
 
     # Add aliases
     echo "alias k='kubectl'" >> ~/.bashrc
@@ -103,7 +98,6 @@ data:
     echo "alias l='ls -CF'" >> ~/.bashrc
     echo "alias rmtoggle='remote-toggle'" >> ~/.bashrc
     echo "alias install='easy-install'" >> ~/.bashrc
-    echo "alias claude='claude-code'" >> ~/.bashrc
     
     # Add completions
     if command -v kubectl >/dev/null 2>&1; then
@@ -118,7 +112,7 @@ data:
     fi
     
     # Add remote mode to prompt
-    echo 'export PS1="\[\033[1;32m\]\u@\h\[\033[00m\]:\[\033[1;34m\]\w\[\033[00m\]$([ -f /tmp/remote_mode_enabled ] && echo \"\[\033[1;31m\][REMOTE]\[\033[00m\]\")$ "' >> ~/.bashrc
+    echo 'export PS1="\[\033[1;32m\]\u@\h\[\033[00m\]:\[\033[1;34m\]\w\[\033[00m\]\$([ -f /tmp/remote_mode_enabled ] && echo \"\[\033[1;31m\][REMOTE]\[\033[00m\]\")$ "' >> ~/.bashrc
     
     # Auto-combine kubeconfigs
     kube-combine 2>/dev/null || echo "⚠️  Run 'kube-combine' to setup kubectl"
@@ -126,36 +120,34 @@ data:
     source ~/.bashrc
     
     echo ""
-    echo "🎯 Production k8s-tmux Terminal Ready!"
+    echo "🎯 Working k8s-tmux Terminal Ready!"
     echo ""
-    echo "✅ Installed: kubectl, helm, k9s, btop, gh, mc, claude-code"
-    echo "🔧 Commands: k, claude, remote-toggle, kube-combine, install"
-    echo "🔑 Secrets: Check Claude API key and GitHub token status above"
+    echo "✅ Installed: kubectl, helm, k9s, btop, gh, mc"
+    echo "🔧 Commands: k, remote-toggle, kube-combine, install"
+    echo "🔑 GitHub: Authenticated with token"
     echo "🎯 Remote: https://ntfy.wiredquill.com/ai_communication"
     echo ""
-    echo "📋 Setup secrets:"
-    echo "kubectl create secret generic claude-secrets --from-literal=claude-api-key=YOUR_KEY -n ai-dev"
-    echo "kubectl create secret generic github-secrets --from-literal=github-token=YOUR_TOKEN -n ai-dev"
+    echo "💡 To add Claude later: install nodejs npm && npm install -g @anthropic/claude-code"
     echo ""
 
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: k8s-tmux-production
+  name: k8s-tmux-working
   namespace: ai-dev
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: k8s-tmux-production
+      app: k8s-tmux-working
   template:
     metadata:
       labels:
-        app: k8s-tmux-production
+        app: k8s-tmux-working
     spec:
       containers:
-      - name: production-terminal
+      - name: working-terminal
         image: opensuse/leap:15.6
         ports:
         - containerPort: 7681
@@ -163,22 +155,17 @@ spec:
         args: 
         - "-c"
         - |
-          # Minimal repos and packages
+          # Fast minimal setup
           zypper refresh &&
-          zypper in -y --no-recommends curl wget git vim nano tmux sudo openssh-clients tar gzip unzip jq ca-certificates mc tree htop patterns-devel-base-devel_basis &&
+          zypper in -y --no-recommends curl wget git vim nano tmux sudo openssh-clients tar gzip unzip jq ca-certificates mc tree htop &&
           
-          # Install essential K8s tools from repos
+          # Install K8s tools
           zypper in -y kubernetes-client helm &&
           
-          # Install other tools from repos where possible
+          # Install other essential tools
           zypper in -y gh btop &&
           
-          # Install Claude Code client (latest version)
-          CLAUDE_VERSION=$(curl -s https://api.github.com/repos/anthropics/claude-code/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/') &&
-          curl -L "https://github.com/anthropics/claude-code/releases/download/${CLAUDE_VERSION}/claude-code-linux-x64.tar.gz" | tar xz -C /tmp &&
-          mv /tmp/claude-code /usr/local/bin/claude-code && chmod +x /usr/local/bin/claude-code &&
-          
-          # Only install k9s from GitHub (zypper version is outdated)
+          # k9s from GitHub (fast download)
           curl -L https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_amd64.tar.gz | tar xz -C /tmp &&
           mv /tmp/k9s /usr/local/bin/k9s && chmod +x /usr/local/bin/k9s &&
           
@@ -189,19 +176,20 @@ spec:
           useradd -m -s /bin/bash dev && echo 'dev ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers &&
           
           # Initialize
-          su - dev -c '/config/init-production.sh' &&
+          su - dev -c '/config/init-working.sh' &&
           
-          # Start terminal
+          # Start shared tmux session
           cd /mnt/k8s-tmux &&
-          exec su - dev -c 'cd /mnt/k8s-tmux && /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin bash -l'
+          su - dev -c 'cd /mnt/k8s-tmux && tmux new-session -d -s main "bash -l"' &&
+          exec su - dev -c 'cd /mnt/k8s-tmux && /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin tmux attach-session -t main'
         volumeMounts:
         - name: k8s-tmux-storage
           mountPath: /mnt/k8s-tmux
         - name: wiredquill-storage
           mountPath: /mnt/WiredQuill
-        - name: production-config
+        - name: working-config
           mountPath: /config
-        - name: claude-secrets
+        - name: github-secrets
           mountPath: /secrets
           readOnly: true
         env:
@@ -223,23 +211,23 @@ spec:
         nfs:
           server: 10.0.0.10
           path: /volume1/WiredQuill
-      - name: production-config
+      - name: working-config
         configMap:
-          name: production-config
+          name: working-config
           defaultMode: 0755
-      - name: claude-secrets
+      - name: github-secrets
         secret:
-          secretName: claude-secrets
+          secretName: github-secrets
           optional: true
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: k8s-tmux-production-service
+  name: k8s-tmux-working-service
   namespace: ai-dev
 spec:
   selector:
-    app: k8s-tmux-production
+    app: k8s-tmux-working
   ports:
   - protocol: TCP
     port: 80
