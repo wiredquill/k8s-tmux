@@ -1,0 +1,393 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: simple-remote-config
+  namespace: ai-dev
+data:
+  remote-mode-script.sh: |
+    #!/bin/bash
+    # Remote Mode Toggle Script for Claude AI Integration
+    NTFY_SERVER="https://ntfy.wiredquill.com"
+    NTFY_TOPIC="ai_communication"
+    REMOTE_MODE_FILE="/tmp/remote_mode_enabled"
+    LOG_FILE="/tmp/claude_monitor.log"
+
+    # Function to send notification to ntfy
+    send_ntfy() {
+        local title="$1"
+        local message="$2"
+        local priority="${3:-3}"
+        
+        curl -s -X POST "$NTFY_SERVER/$NTFY_TOPIC" \
+            -H "Title: $title" \
+            -H "Priority: $priority" \
+            -d "$message" >> "$LOG_FILE" 2>&1
+    }
+
+    # Function to toggle remote mode
+    toggle_remote_mode() {
+        if [ -f "$REMOTE_MODE_FILE" ]; then
+            rm "$REMOTE_MODE_FILE"
+            echo "🔴 Remote mode DISABLED"
+            send_ntfy "Claude Remote Mode" "Remote mode disabled" 2
+        else
+            touch "$REMOTE_MODE_FILE"
+            echo "🟢 Remote mode ENABLED"
+            echo "Claude responses will be sent to ntfy when multiple options are available"
+            send_ntfy "Claude Remote Mode" "Remote mode enabled - monitoring Claude responses" 4
+        fi
+    }
+
+    # Function to check if remote mode is enabled
+    is_remote_mode() {
+        [ -f "$REMOTE_MODE_FILE" ]
+    }
+
+  init-setup.sh: |
+    #!/bin/bash
+    
+    # Install remote mode functionality
+    source /config/remote-mode-script.sh
+    
+    # Create remote mode toggle command
+    cat > /usr/local/bin/remote-toggle << 'EOF'
+    #!/bin/bash
+    source /config/remote-mode-script.sh
+    toggle_remote_mode
+    EOF
+    chmod +x /usr/local/bin/remote-toggle
+
+    # Create send options command
+    cat > /usr/local/bin/send-claude-options << 'EOF'
+    #!/bin/bash
+    source /config/remote-mode-script.sh
+    if [ $# -eq 0 ]; then
+        echo "Usage: send-claude-options 'Option 1|Option 2|Option 3'"
+        exit 1
+    fi
+    if is_remote_mode; then
+        send_ntfy "Claude Options Available" "$1" 5
+        echo "📱 Sent options to ntfy: $1"
+    else
+        echo "❌ Remote mode not enabled. Use 'remote-toggle' first."
+    fi
+    EOF
+    chmod +x /usr/local/bin/send-claude-options
+
+    # Setup kubectl configuration
+    mkdir -p ~/.kube
+    
+    # Create kubectl auto-combiner script
+    cat > /usr/local/bin/kubectl-auto-combine << 'EOF'
+    #!/bin/bash
+    # Auto-combine all kubeconfig files in /mnt/k8s-tmux/kube/
+    KUBE_DIR="/mnt/k8s-tmux/kube"
+    COMBINED_CONFIG="/tmp/combined-kubeconfig"
+    
+    if [ -d "$KUBE_DIR" ]; then
+        # Find all yaml/yml files in kube directory
+        configs=$(find "$KUBE_DIR" -name "*.yaml" -o -name "*.yml" -o -name "config" -o -name "*.conf" 2>/dev/null)
+        
+        if [ -n "$configs" ]; then
+            export KUBECONFIG=$(echo $configs | tr ' ' ':')
+            kubectl config view --flatten > "$COMBINED_CONFIG"
+            cp "$COMBINED_CONFIG" ~/.kube/config
+            echo "✅ Combined kubeconfigs: $(echo $configs | wc -w) files"
+            kubectl config get-contexts
+        else
+            echo "⚠️  No kubeconfig files found in $KUBE_DIR"
+        fi
+    else
+        echo "⚠️  Kube directory not found: $KUBE_DIR"
+    fi
+    EOF
+    chmod +x /usr/local/bin/kubectl-auto-combine
+
+    # Create YAML auto-apply monitor
+    cat > /usr/local/bin/kubectl-yaml-monitor << 'EOF'
+    #!/bin/bash
+    # Monitor /mnt/k8s-tmux for new YAML files and auto-apply them
+    WATCH_DIR="/mnt/k8s-tmux"
+    LOG_FILE="/tmp/kubectl-monitor.log"
+    
+    echo "🔍 Monitoring $WATCH_DIR for new YAML files..." | tee -a "$LOG_FILE"
+    
+    # Use inotify to watch for new files
+    inotifywait -m -r -e create,moved_to --format '%w%f %e' "$WATCH_DIR" | while read file event; do
+        if [[ "$file" =~ \.(yaml|yml)$ ]] && [[ ! "$file" =~ \.git/ ]]; then
+            echo "📄 New YAML detected: $file" | tee -a "$LOG_FILE"
+            sleep 2  # Wait for file to be fully written
+            
+            if kubectl apply -f "$file" 2>&1 | tee -a "$LOG_FILE"; then
+                echo "✅ Applied successfully: $file" | tee -a "$LOG_FILE"
+            else
+                echo "❌ Failed to apply: $file" | tee -a "$LOG_FILE"
+            fi
+        fi
+    done
+    EOF
+    chmod +x /usr/local/bin/kubectl-yaml-monitor
+
+    # Create easy package installer
+    cat > /usr/local/bin/easy-install << 'EOF'
+    #!/bin/bash
+    # Easy package installer with common repos
+    if [ $# -eq 0 ]; then
+        echo "Usage: easy-install <package1> [package2] ..."
+        echo "Example: easy-install nodejs npm docker"
+        exit 1
+    fi
+    
+    echo "🔧 Installing packages: $*"
+    
+    # Try zypper first
+    if zypper in -y "$@"; then
+        echo "✅ Installed via zypper: $*"
+    else
+        echo "⚠️  Some packages may not be available via zypper"
+        echo "💡 Try: zypper search <package-name> to find alternatives"
+    fi
+    EOF
+    chmod +x /usr/local/bin/easy-install
+
+    # Add to shell aliases and functions
+    echo "alias rmtoggle='remote-toggle'" >> ~/.bashrc
+    echo "alias send-options='send-claude-options'" >> ~/.bashrc
+    echo "alias k='kubecolor'" >> ~/.bashrc  # Use kubecolor instead of plain kubectl
+    echo "alias kubectl='kubecolor'" >> ~/.bashrc
+    echo "alias kx='kubectx'" >> ~/.bashrc  
+    echo "alias kn='kubens'" >> ~/.bashrc
+    echo "alias ll='exa -la'" >> ~/.bashrc  # Use exa instead of ls
+    echo "alias ls='exa'" >> ~/.bashrc
+    echo "alias la='exa -A'" >> ~/.bashrc
+    echo "alias l='exa -CF'" >> ~/.bashrc
+    echo "alias cat='bat'" >> ~/.bashrc  # Use bat instead of cat
+    echo "alias find='fd'" >> ~/.bashrc  # Use fd instead of find
+    echo "alias grep='rg'" >> ~/.bashrc  # Use ripgrep instead of grep
+    echo "alias install='easy-install'" >> ~/.bashrc
+    echo "alias kube-combine='kubectl-auto-combine'" >> ~/.bashrc
+    echo "alias kube-monitor='kubectl-yaml-monitor'" >> ~/.bashrc
+    echo "alias logs='stern'" >> ~/.bashrc  # Quick log tailing
+    echo "alias kcheck='popeye'" >> ~/.bashrc  # Cluster health check
+    echo "alias kval='kubeval'" >> ~/.bashrc  # YAML validation
+    echo "alias dive-image='dive'" >> ~/.bashrc  # Docker image analysis
+    
+    # Add kubectl completion
+    echo 'source <(kubectl completion bash)' >> ~/.bashrc
+    echo 'source <(helm completion bash)' >> ~/.bashrc
+    echo 'complete -F __start_kubectl k' >> ~/.bashrc
+    
+    # Add remote mode status to prompt
+    echo 'export PS1="\[\033[1;32m\]\u@\h\[\033[00m\]:\[\033[1;34m\]\w\[\033[00m\]$([ -f /tmp/remote_mode_enabled ] && echo \"\[\033[1;31m\][REMOTE]\[\033[00m\]\")$ "' >> ~/.bashrc
+    
+    # Auto-combine kubeconfigs on startup
+    kubectl-auto-combine 2>/dev/null || echo "⚠️  Run 'kube-combine' to setup kubectl"
+    
+    source ~/.bashrc
+    
+    echo ""
+    echo "========================================="
+    echo "🎯 k8s-tmux OpenSUSE Complete! 🎯"
+    echo "========================================="
+    echo "📦 Kubernetes Tools (Latest Versions):"
+    echo "  • kubectl, helm          - Core Kubernetes tools"
+    echo "  • kubectx, kubens        - Context/namespace switching"
+    echo "  • k9s                    - Terminal Kubernetes dashboard"
+    echo "  • stern                  - Multi-pod log tailing"
+    echo "  • popeye                 - Cluster health checker"
+    echo "  • kubecolor              - Colorized kubectl output"
+    echo "  • kubeval                - YAML validation"
+    echo ""
+    echo "🔧 Development & Troubleshooting:"
+    echo "  • ripgrep (rg)           - Fast text search"
+    echo "  • fd                     - Fast file finder"
+    echo "  • fzf                    - Fuzzy finder"
+    echo "  • bat                    - Better cat with syntax highlighting"
+    echo "  • exa                    - Better ls with colors"
+    echo "  • delta                  - Better git diff"
+    echo "  • dive                   - Docker image analyzer"
+    echo "  • gron                   - JSON grep tool"
+    echo "  • yq                     - YAML processor"
+    echo ""
+    echo "💻 Core Tools:"
+    echo "  • git, vim, nano, tmux   - Development essentials"
+    echo "  • btop, htop, fastfetch  - System monitoring"
+    echo "  • mc                     - File manager"
+    echo "  • gh, lazygit            - GitHub tools"
+    echo "  • claude-code            - Claude Code client"
+    echo "  • ffmpeg, youtube-dl     - Multimedia (packman repo)"
+    echo ""
+    echo "🚀 Quick Commands:"
+    echo "  • k, kubectl             - Colorized kubectl (kubecolor)"
+    echo "  • kx, kn                 - Context/namespace switching"
+    echo "  • logs <pod>             - Multi-pod log tailing (stern)"
+    echo "  • kcheck                 - Cluster health check (popeye)"
+    echo "  • kval <file>            - YAML validation (kubeval)"
+    echo "  • dive-image <image>     - Analyze Docker images"
+    echo "  • ls, ll, cat, grep      - Enhanced with exa, bat, ripgrep"
+    echo "  • kube-combine           - Auto-combine kubeconfigs"
+    echo "  • kube-monitor           - Auto-apply new YAML files"
+    echo "  • easy-install <pkg>     - Simple package installation"
+    echo ""
+    echo "🎯 NTFY: ai_communication @ https://ntfy.wiredquill.com"
+    echo "📁 Storage: /mnt/k8s-tmux, /mnt/WiredQuill"
+    echo "📋 Repos: packman, kubic, shells (easy package installation)"
+    echo ""
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux-simple
+  namespace: ai-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux-simple
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux-simple
+    spec:
+      containers:
+      - name: opensuse-terminal
+        image: opensuse/leap:15.6
+        ports:
+        - containerPort: 7681
+        command: ["/bin/bash"]
+        args: 
+        - "-c"
+        - |
+          # Add essential repositories
+          zypper addrepo -cfp 90 'https://ftp.gwdg.de/pub/linux/misc/packman/suse/openSUSE_Leap_15.6/' packman &&
+          zypper addrepo https://download.opensuse.org/repositories/devel:kubic/15.6/devel:kubic.repo &&
+          zypper addrepo https://download.opensuse.org/repositories/shells/15.6/shells.repo &&
+          zypper --gpg-auto-import-keys refresh &&
+          
+          # Install base packages and essential tools
+          zypper in -y curl wget git bash-completion vim nano tmux zsh sudo openssh-clients tar gzip unzip jq yq python3 python3-pip ca-certificates mc tree htop btop fastfetch inotify-tools ripgrep fd fzf bat exa patterns-devel-base-devel_basis &&
+          
+          # Install Kubernetes tools
+          zypper in -y kubernetes-client helm &&
+          
+          # Install additional multimedia and utility packages from packman
+          zypper in -y --allow-vendor-change ffmpeg youtube-dl &&
+          
+          # Install kubectx/kubens
+          KUBECTX_VERSION=$(curl -s https://api.github.com/repos/ahmetb/kubectx/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/') &&
+          curl -L "https://github.com/ahmetb/kubectx/releases/download/${KUBECTX_VERSION}/kubectx_${KUBECTX_VERSION}_linux_x86_64.tar.gz" | tar xz -C /tmp &&
+          curl -L "https://github.com/ahmetb/kubectx/releases/download/${KUBECTX_VERSION}/kubens_${KUBECTX_VERSION}_linux_x86_64.tar.gz" | tar xz -C /tmp &&
+          mv /tmp/kubectx /usr/local/bin/kubectx &&
+          mv /tmp/kubens /usr/local/bin/kubens &&
+          chmod +x /usr/local/bin/kubectx /usr/local/bin/kubens &&
+          
+          # Install k9s
+          curl -L https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_amd64.tar.gz | tar xz -C /tmp &&
+          mv /tmp/k9s /usr/local/bin/k9s &&
+          chmod +x /usr/local/bin/k9s &&
+          
+          # Install stern (Kubernetes log tailing)
+          curl -L https://github.com/stern/stern/releases/latest/download/stern_Linux_amd64.tar.gz | tar xz -C /tmp &&
+          mv /tmp/stern /usr/local/bin/stern &&
+          chmod +x /usr/local/bin/stern &&
+          
+          # Install popeye (Kubernetes cluster sanitizer)
+          curl -L https://github.com/derailed/popeye/releases/latest/download/popeye_Linux_x86_64.tar.gz | tar xz -C /tmp &&
+          mv /tmp/popeye /usr/local/bin/popeye &&
+          chmod +x /usr/local/bin/popeye &&
+          
+          # Install kubecolor (colorized kubectl output)
+          curl -L https://github.com/hidetatz/kubecolor/releases/latest/download/kubecolor_Linux_amd64.tar.gz | tar xz -C /tmp &&
+          mv /tmp/kubecolor /usr/local/bin/kubecolor &&
+          chmod +x /usr/local/bin/kubecolor &&
+          
+          # Install kubeval (Kubernetes YAML validation)
+          curl -L https://github.com/instrumenta/kubeval/releases/latest/download/kubeval-linux-amd64.tar.gz | tar xz -C /tmp &&
+          mv /tmp/kubeval /usr/local/bin/kubeval &&
+          chmod +x /usr/local/bin/kubeval &&
+          
+          # Install dive (Docker image analyzer)
+          curl -L https://github.com/wagoodman/dive/releases/latest/download/dive_Linux_amd64.tar.gz | tar xz -C /tmp &&
+          mv /tmp/dive /usr/local/bin/dive &&
+          chmod +x /usr/local/bin/dive &&
+          
+          # Install gron (JSON grep)
+          curl -L https://github.com/tomnomnom/gron/releases/latest/download/gron-linux-amd64.tgz | tar xz -C /tmp &&
+          mv /tmp/gron /usr/local/bin/gron &&
+          chmod +x /usr/local/bin/gron &&
+          
+          # Install delta (better git diff)
+          curl -L https://github.com/dandavison/delta/releases/latest/download/delta-x86_64-unknown-linux-gnu.tar.gz | tar xz -C /tmp &&
+          mv /tmp/delta-*/delta /usr/local/bin/delta &&
+          chmod +x /usr/local/bin/delta &&
+          
+          # Install Claude Code client
+          curl -L https://github.com/anthropics/claude-code/releases/latest/download/claude-code-linux-x64.tar.gz | tar xz -C /tmp &&
+          mv /tmp/claude-code /usr/local/bin/claude-code &&
+          chmod +x /usr/local/bin/claude-code &&
+          
+          # Install GitHub CLI
+          zypper in -y gh &&
+          
+          # Install GitHub Desktop alternative (GitKraken or lazygit)
+          curl -L https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_Linux_x86_64.tar.gz | tar xz -C /tmp &&
+          mv /tmp/lazygit /usr/local/bin/lazygit &&
+          chmod +x /usr/local/bin/lazygit &&
+          
+          # Install ttyd
+          curl -L https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64 -o /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd &&
+          
+          # Create user
+          useradd -m -s /bin/bash dev && echo 'dev ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers &&
+          
+          # Initialize remote mode functionality
+          su - dev -c '/config/init-setup.sh' &&
+          
+          # Start terminal
+          cd /mnt/k8s-tmux &&
+          exec su - dev -c 'cd /mnt/k8s-tmux && /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin bash -l'
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        - name: remote-config
+          mountPath: /config
+        env:
+        - name: TERM
+          value: "xterm-256color"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: wiredquill-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/WiredQuill
+      - name: remote-config
+        configMap:
+          name: simple-remote-config
+          defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-simple-service
+  namespace: ai-dev
+spec:
+  selector:
+    app: k8s-tmux-simple
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 7681
+  type: LoadBalancer

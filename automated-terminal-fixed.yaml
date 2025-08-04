@@ -1,0 +1,461 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: automation-config-fixed
+  namespace: ai-dev
+data:
+  automation-ui.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>k8s-tmux Terminal with Automation</title>
+        <meta charset="UTF-8">
+        <style>
+            body { 
+                margin: 0; 
+                padding: 0; 
+                background: #1a1a1a; 
+                font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+                color: #e0e0e0;
+            }
+            
+            .controls-panel {
+                position: fixed;
+                top: 10px;
+                right: 10px;
+                background: rgba(0,0,0,0.9);
+                padding: 15px;
+                border-radius: 8px;
+                color: white;
+                z-index: 1000;
+                border: 1px solid #333;
+                min-width: 300px;
+                max-height: 80vh;
+                overflow-y: auto;
+            }
+            
+            .panel-section {
+                margin-bottom: 15px;
+                padding-bottom: 10px;
+                border-bottom: 1px solid #444;
+            }
+            
+            .panel-title {
+                font-weight: bold;
+                color: #00bfff;
+                margin-bottom: 8px;
+            }
+            
+            .btn {
+                background: #007acc;
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                margin: 2px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 11px;
+            }
+            
+            .btn:hover { background: #005a9e; }
+            .btn-success { background: #28a745; }
+            .btn-secondary { background: #6c757d; }
+            
+            .form-group {
+                margin-bottom: 8px;
+            }
+            
+            .form-group label {
+                display: block;
+                font-size: 11px;
+                color: #ccc;
+                margin-bottom: 3px;
+            }
+            
+            .form-group input {
+                width: 100%;
+                padding: 5px;
+                border: 1px solid #555;
+                background: #2a2a2a;
+                color: #e0e0e0;
+                border-radius: 3px;
+                font-size: 11px;
+            }
+            
+            .status-display {
+                background: #2a2a2a;
+                padding: 8px;
+                border-radius: 4px;
+                font-size: 10px;
+                line-height: 1.4;
+            }
+            
+            .rule-input {
+                width: 50px !important;
+                display: inline-block !important;
+                text-align: center;
+            }
+            
+            .terminal {
+                font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace !important;
+                font-size: 16px !important;
+                line-height: 1.4 !important;
+                background-color: #1a1a1a !important;
+                color: #e0e0e0 !important;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="controls-panel">
+            <!-- Remote Mode -->
+            <div class="panel-section">
+                <div class="panel-title">📡 Remote Mode</div>
+                <button class="btn" onclick="toggleRemoteMode()" id="remote-btn">🔴 Remote: OFF</button>
+            </div>
+            
+            <!-- Auto-Response -->
+            <div class="panel-section">
+                <div class="panel-title">🔄 Auto-Response</div>
+                <button class="btn btn-secondary" onclick="toggleAutoResponse()" id="auto-response-toggle">
+                    🔄 Auto-Response: OFF
+                </button>
+                
+                <div class="form-group" style="margin-top: 8px;">
+                    <label>Rules:</label>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span>2-choice →</span>
+                        <input type="number" class="rule-input" id="two-choice-rule" value="1" min="1" max="2">
+                        <span>3-choice →</span>
+                        <input type="number" class="rule-input" id="three-choice-rule" value="2" min="1" max="3">
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Schedule Message -->
+            <div class="panel-section">
+                <div class="panel-title">📅 Schedule Message</div>
+                
+                <div class="form-group">
+                    <label>Message:</label>
+                    <input type="text" id="schedule-message" placeholder="Message to send...">
+                </div>
+                
+                <div class="form-group">
+                    <label>Time:</label>
+                    <input type="datetime-local" id="schedule-time">
+                </div>
+                
+                <button class="btn" onclick="scheduleMessage()">⏰ Schedule</button>
+                <button class="btn" onclick="quickSchedule(1)">+1min</button>
+                <button class="btn" onclick="quickSchedule(5)">+5min</button>
+            </div>
+            
+            <!-- Status -->
+            <div class="panel-section">
+                <div class="panel-title">📊 Status</div>
+                <div id="automation-status" class="status-display">
+                    Initializing...
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            let autoResponseEnabled = false;
+            let scheduledMessages = [];
+            let remoteMode = false;
+            let ws = null;
+            
+            // Connect to ttyd WebSocket
+            function connectWebSocket() {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+                
+                ws.onopen = function() {
+                    console.log('Connected to terminal WebSocket');
+                };
+                
+                ws.onmessage = function(event) {
+                    // Monitor terminal output for auto-response
+                    if (autoResponseEnabled && event.data) {
+                        analyzeTerminalOutput(event.data);
+                    }
+                };
+            }
+            
+            function analyzeTerminalOutput(data) {
+                const text = data.toLowerCase();
+                
+                // Detect 2-choice questions
+                if (text.includes('1.') && text.includes('2.') && !text.includes('3.')) {
+                    setTimeout(() => {
+                        const choice = document.getElementById('two-choice-rule').value;
+                        sendToTerminal(choice);
+                        console.log(`Auto-responded to 2-choice with: ${choice}`);
+                    }, 1000);
+                }
+                // Detect 3-choice questions  
+                else if (text.includes('1.') && text.includes('2.') && text.includes('3.')) {
+                    setTimeout(() => {
+                        const choice = document.getElementById('three-choice-rule').value;
+                        sendToTerminal(choice);
+                        console.log(`Auto-responded to 3-choice with: ${choice}`);
+                    }, 1000);
+                }
+            }
+            
+            function toggleRemoteMode() {
+                sendToTerminal('remote-toggle');
+                remoteMode = !remoteMode;
+                const btn = document.getElementById('remote-btn');
+                btn.textContent = remoteMode ? '🟢 Remote: ON' : '🔴 Remote: OFF';
+                btn.className = remoteMode ? 'btn btn-success' : 'btn';
+                updateStatus();
+            }
+            
+            function toggleAutoResponse() {
+                autoResponseEnabled = !autoResponseEnabled;
+                const btn = document.getElementById('auto-response-toggle');
+                btn.textContent = autoResponseEnabled ? '🔄 Auto-Response: ON' : '🔄 Auto-Response: OFF';
+                btn.className = autoResponseEnabled ? 'btn btn-success' : 'btn btn-secondary';
+                updateStatus();
+            }
+            
+            function scheduleMessage() {
+                const message = document.getElementById('schedule-message').value;
+                const datetime = document.getElementById('schedule-time').value;
+                
+                if (!message || !datetime) {
+                    alert('Please enter both message and time');
+                    return;
+                }
+                
+                const scheduledTime = new Date(datetime);
+                scheduledMessages.push({
+                    message: message,
+                    time: scheduledTime,
+                    id: Date.now()
+                });
+                
+                // Clear form
+                document.getElementById('schedule-message').value = '';
+                document.getElementById('schedule-time').value = '';
+                
+                updateStatus();
+                console.log(`Scheduled: "${message}" for ${scheduledTime}`);
+            }
+            
+            function quickSchedule(minutes) {
+                const messageInput = document.getElementById('schedule-message');
+                if (!messageInput.value) {
+                    alert('Please enter a message first');
+                    return;
+                }
+                
+                const now = new Date();
+                now.setMinutes(now.getMinutes() + minutes);
+                document.getElementById('schedule-time').value = now.toISOString().slice(0, 16);
+                scheduleMessage();
+            }
+            
+            function sendToTerminal(text) {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    // Send each character with delay to simulate typing
+                    const chars = text.split('');
+                    let i = 0;
+                    
+                    function sendChar() {
+                        if (i < chars.length) {
+                            ws.send(JSON.stringify({input: chars[i]}));
+                            i++;
+                            setTimeout(sendChar, 50);
+                        } else {
+                            // Send Enter key
+                            setTimeout(() => {
+                                ws.send(JSON.stringify({input: '\\r'}));
+                            }, 100);
+                        }
+                    }
+                    sendChar();
+                } else {
+                    console.log(`Would send to terminal: ${text}`);
+                }
+            }
+            
+            function updateStatus() {
+                const status = document.getElementById('automation-status');
+                const twoChoice = document.getElementById('two-choice-rule').value;
+                const threeChoice = document.getElementById('three-choice-rule').value;
+                
+                status.innerHTML = `
+                    <div>🔄 Auto-response: ${autoResponseEnabled ? 'ON' : 'OFF'}</div>
+                    <div>📡 Remote: ${remoteMode ? 'ON' : 'OFF'}</div>
+                    <div>📅 Scheduled: ${scheduledMessages.length}</div>
+                    <div>📋 Rules: 2→${twoChoice}, 3→${threeChoice}</div>
+                `;
+            }
+            
+            // Check scheduled messages every second
+            setInterval(() => {
+                const now = new Date();
+                const ready = scheduledMessages.filter(msg => msg.time <= now);
+                
+                ready.forEach(msg => {
+                    sendToTerminal(msg.message);
+                    scheduledMessages = scheduledMessages.filter(m => m.id !== msg.id);
+                    updateStatus();
+                });
+            }, 1000);
+            
+            // Initialize
+            window.addEventListener('load', function() {
+                connectWebSocket();
+                updateStatus();
+                
+                // Set default time to 1 minute from now
+                const now = new Date();
+                now.setMinutes(now.getMinutes() + 1);
+                document.getElementById('schedule-time').value = now.toISOString().slice(0, 16);
+            });
+        </script>
+    </body>
+    </html>
+
+  remote-mode-script.sh: |
+    #!/bin/bash
+    # Remote Mode Toggle Script for Claude AI Integration
+    NTFY_SERVER="https://ntfy.wiredquill.com"
+    NTFY_TOPIC="ai_communication"
+    REMOTE_MODE_FILE="/tmp/remote_mode_enabled"
+    LOG_FILE="/tmp/claude_monitor.log"
+
+    # Function to send notification to ntfy
+    send_ntfy() {
+        local title="$1"
+        local message="$2"
+        local priority="${3:-3}"
+        
+        curl -s -X POST "$NTFY_SERVER/$NTFY_TOPIC" \
+            -H "Title: $title" \
+            -H "Priority: $priority" \
+            -d "$message" >> "$LOG_FILE" 2>&1
+    }
+
+    # Function to toggle remote mode
+    toggle_remote_mode() {
+        if [ -f "$REMOTE_MODE_FILE" ]; then
+            rm "$REMOTE_MODE_FILE"
+            echo "🔴 Remote mode DISABLED"
+            send_ntfy "Claude Remote Mode" "Remote mode disabled" 2
+        else
+            touch "$REMOTE_MODE_FILE"
+            echo "🟢 Remote mode ENABLED"
+            echo "Claude responses will be sent to ntfy when multiple options are available"
+            send_ntfy "Claude Remote Mode" "Remote mode enabled - monitoring Claude responses" 4
+        fi
+    }
+
+  init-remote.sh: |
+    #!/bin/bash
+    
+    # Install remote mode functionality
+    source /config/remote-mode-script.sh
+    
+    # Create remote mode toggle command
+    cat > /usr/local/bin/remote-toggle << 'EOF'
+    #!/bin/bash
+    source /config/remote-mode-script.sh
+    toggle_remote_mode
+    EOF
+    chmod +x /usr/local/bin/remote-toggle
+
+    # Add to shell aliases
+    echo "alias rmtoggle='remote-toggle'" >> ~/.bashrc
+    
+    # Add remote mode status to prompt
+    echo 'export PS1="\[\033[1;32m\]\u@\h\[\033[00m\]:\[\033[1;34m\]\w\[\033[00m\]$([ -f /tmp/remote_mode_enabled ] && echo \"\[\033[1;31m\][REMOTE]\[\033[00m\]\")$ "' >> ~/.bashrc
+    
+    source ~/.bashrc
+    
+    echo "📡 Remote mode functionality initialized"
+    echo "🎯 NTFY Topic: ai_communication"
+    echo "🌐 NTFY Server: https://ntfy.wiredquill.com"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux-automated-fixed
+  namespace: ai-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux-automated-fixed
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux-automated-fixed
+    spec:
+      containers:
+      - name: automated-terminal
+        image: opensuse/leap:15.6
+        ports:
+        - containerPort: 7681
+        command: ["/bin/bash"]
+        args: ["-c", "
+          zypper refresh && 
+          zypper install -y curl wget git bash-completion vim nano tmux zsh sudo openssh-clients tar gzip unzip jq python3 python3-pip ca-certificates mc tree patterns-devel-base-devel_basis &&
+          curl -L https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64 -o /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd &&
+          useradd -m -s /bin/bash dev && echo 'dev ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers &&
+          
+          # Setup remote mode functionality
+          source /config/remote-mode-script.sh &&
+          su - dev -c '/config/init-remote.sh' &&
+          
+          cd /mnt/k8s-tmux &&
+          exec su - dev -c 'cd /mnt/k8s-tmux && ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin --index-file /config/automation-ui.html bash -l'
+        "]
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        - name: automation-config
+          mountPath: /config
+        env:
+        - name: TERM
+          value: "xterm-256color"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: wiredquill-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/WiredQuill
+      - name: automation-config
+        configMap:
+          name: automation-config-fixed
+          defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-automated-fixed-service
+  namespace: ai-dev
+spec:
+  selector:
+    app: k8s-tmux-automated-fixed
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 7681
+  type: LoadBalancer
