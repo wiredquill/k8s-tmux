@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: quick-test-config
+  namespace: ai-dev
+data:
+  remote-mode-script.sh: |
+    #!/bin/bash
+    NTFY_SERVER="https://ntfy.wiredquill.com"
+    NTFY_TOPIC="ai_communication"
+    REMOTE_MODE_FILE="/tmp/remote_mode_enabled"
+
+    send_ntfy() {
+        curl -s -X POST "$NTFY_SERVER/$NTFY_TOPIC" \
+            -H "Title: $1" \
+            -H "Priority: ${3:-3}" \
+            -d "$2" 
+    }
+
+    toggle_remote_mode() {
+        if [ -f "$REMOTE_MODE_FILE" ]; then
+            rm "$REMOTE_MODE_FILE"
+            echo "🔴 Remote mode DISABLED"
+            send_ntfy "Claude Remote Mode" "Remote mode disabled" 2
+        else
+            touch "$REMOTE_MODE_FILE"
+            echo "🟢 Remote mode ENABLED"
+            send_ntfy "Claude Remote Mode" "Remote mode enabled" 4
+        fi
+    }
+
+  init-quick.sh: |
+    #!/bin/bash
+    
+    # Quick setup
+    source /config/remote-mode-script.sh
+    
+    cat > /usr/local/bin/remote-toggle << 'EOF'
+    #!/bin/bash
+    source /config/remote-mode-script.sh
+    toggle_remote_mode
+    EOF
+    chmod +x /usr/local/bin/remote-toggle
+
+    # Add aliases
+    echo "alias rmtoggle='remote-toggle'" >> ~/.bashrc
+    echo "alias k='kubectl'" >> ~/.bashrc
+    echo "alias ll='ls -la'" >> ~/.bashrc
+    
+    # Add remote mode to prompt
+    echo 'export PS1="\[\033[1;32m\]\u@\h\[\033[00m\]:\[\033[1;34m\]\w\[\033[00m\]$([ -f /tmp/remote_mode_enabled ] && echo \"\[\033[1;31m\][REMOTE]\[\033[00m\]\")$ "' >> ~/.bashrc
+    
+    source ~/.bashrc
+    
+    echo ""
+    echo "🎯 Quick Test Terminal Ready!"
+    echo ""
+    echo "Commands:"
+    echo "  remote-toggle  - Toggle remote mode"
+    echo "  rmtoggle       - Short alias"
+    echo ""
+    echo "🎯 NTFY: ai_communication @ https://ntfy.wiredquill.com"
+    echo ""
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux-quick-test
+  namespace: ai-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux-quick-test
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux-quick-test
+    spec:
+      containers:
+      - name: quick-test
+        image: opensuse/leap:15.6
+        ports:
+        - containerPort: 7681
+        command: ["/bin/bash"]
+        args: 
+        - "-c"
+        - |
+          # Minimal install for quick testing
+          zypper refresh &&
+          zypper in -y --no-recommends curl git vim nano tmux sudo &&
+          curl -L https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64 -o /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd &&
+          useradd -m -s /bin/bash dev && echo 'dev ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers &&
+          su - dev -c '/config/init-quick.sh' &&
+          cd /mnt/k8s-tmux &&
+          exec su - dev -c 'cd /mnt/k8s-tmux && /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin bash -l'
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        - name: quick-config
+          mountPath: /config
+        env:
+        - name: TERM
+          value: "xterm-256color"
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: wiredquill-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/WiredQuill
+      - name: quick-config
+        configMap:
+          name: quick-test-config
+          defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-quick-test-service
+  namespace: ai-dev
+spec:
+  selector:
+    app: k8s-tmux-quick-test
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 7681
+  type: LoadBalancer
