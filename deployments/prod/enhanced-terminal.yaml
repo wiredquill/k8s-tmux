@@ -122,13 +122,20 @@ data:
                 color: #ccc;
             }
             
-            .config-row input, .config-row select {
+            .config-row input, .config-row select, .config-row textarea {
                 flex-grow: 1;
                 background: #333;
                 color: #fff;
                 border: 1px solid var(--session-color, #00ff00);
                 padding: 5px;
                 border-radius: 3px;
+            }
+            
+            .kubeconfig-textarea {
+                min-height: 150px;
+                font-family: 'Courier New', monospace;
+                font-size: 12px;
+                resize: vertical;
             }
             
             .file-drop-zone {
@@ -196,6 +203,14 @@ data:
                     <label>NTFY Topic:</label>
                     <input type="text" id="ntfyTopic" value="ai_communication" onchange="updateNtfyConfig()">
                 </div>
+                <div class="config-row" style="flex-direction: column; align-items: stretch;">
+                    <label style="margin-bottom: 5px;">🔧 Kubeconfig (YAML):</label>
+                    <textarea id="kubeconfigInput" class="kubeconfig-textarea" placeholder="Paste your kubeconfig YAML here...&#10;&#10;Example:&#10;apiVersion: v1&#10;clusters:&#10;- cluster:&#10;    server: https://your-cluster&#10;  name: your-cluster&#10;contexts:&#10;- context:&#10;    cluster: your-cluster&#10;    user: your-user&#10;  name: your-context&#10;current-context: your-context&#10;kind: Config&#10;users:&#10;- name: your-user&#10;  user:&#10;    token: your-token"></textarea>
+                    <div style="display: flex; gap: 5px; margin-top: 5px;">
+                        <button class="btn" onclick="applyKubeconfig()" style="flex: 1;">✅ Apply Kubeconfig</button>
+                        <button class="btn" onclick="clearKubeconfig()" style="flex: 1;">🗑️ Clear</button>
+                    </div>
+                </div>
                 <div class="config-row">
                     <button class="btn" onclick="saveConfig()" style="width: 100%;">💾 Save Configuration</button>
                 </div>
@@ -216,12 +231,14 @@ data:
                 const color = localStorage.getItem('sessionColor') || 'color-green';
                 const ntfyServer = localStorage.getItem('ntfyServer') || 'https://ntfy.wiredquill.com';
                 const ntfyTopic = localStorage.getItem('ntfyTopic') || 'ai_communication';
+                const kubeconfig = localStorage.getItem('kubeconfig') || '';
                 
                 document.getElementById('sessionTitle').textContent = title;
                 document.getElementById('titleInput').value = title;
                 document.getElementById('colorSelect').value = color;
                 document.getElementById('ntfyServer').value = ntfyServer;
                 document.getElementById('ntfyTopic').value = ntfyTopic;
+                document.getElementById('kubeconfigInput').value = kubeconfig;
                 document.getElementById('appContainer').className = 'app-container ' + color;
             }
             
@@ -263,6 +280,50 @@ data:
             function saveConfig() {
                 alert('Configuration saved!');
                 document.getElementById('configPanel').style.display = 'none';
+            }
+            
+            // Kubeconfig management
+            function applyKubeconfig() {
+                const kubeconfig = document.getElementById('kubeconfigInput').value.trim();
+                
+                if (!kubeconfig) {
+                    alert('Please enter a kubeconfig YAML');
+                    return;
+                }
+                
+                // Save to localStorage
+                localStorage.setItem('kubeconfig', kubeconfig);
+                
+                // Send to server to apply
+                fetch('/api/kubeconfig', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ kubeconfig: kubeconfig })
+                }).then(response => {
+                    if (response.ok) {
+                        alert('✅ Kubeconfig applied successfully!\nYou can now use kubectl commands.');
+                    } else {
+                        alert('❌ Failed to apply kubeconfig');
+                    }
+                }).catch(error => {
+                    alert('❌ Error applying kubeconfig: ' + error.message);
+                });
+            }
+            
+            function clearKubeconfig() {
+                if (confirm('Clear the kubeconfig? This will remove kubectl access.')) {
+                    document.getElementById('kubeconfigInput').value = '';
+                    localStorage.removeItem('kubeconfig');
+                    
+                    // Clear on server
+                    fetch('/api/kubeconfig', {
+                        method: 'DELETE'
+                    }).then(response => {
+                        if (response.ok) {
+                            alert('✅ Kubeconfig cleared');
+                        }
+                    });
+                }
             }
             
             // File upload/download
@@ -408,6 +469,57 @@ data:
         }
     });
     
+    // Kubeconfig management
+    app.post('/api/kubeconfig', (req, res) => {
+        const { kubeconfig } = req.body;
+        
+        if (!kubeconfig) {
+            return res.status(400).json({ error: 'No kubeconfig provided' });
+        }
+        
+        try {
+            // Write kubeconfig to file
+            const kubeconfigPath = '/tmp/kubeconfig.yaml';
+            fs.writeFileSync(kubeconfigPath, kubeconfig);
+            
+            // Set KUBECONFIG environment variable by updating shell profiles
+            const kubeconfigExport = `export KUBECONFIG="${kubeconfigPath}"\n`;
+            
+            // Update both bash and zsh profiles
+            fs.appendFileSync('/root/.bashrc', kubeconfigExport);
+            if (fs.existsSync('/root/.zshrc')) {
+                fs.appendFileSync('/root/.zshrc', kubeconfigExport);
+            }
+            
+            // Set for current session via tmux
+            spawn('tmux', ['send-keys', '-t', 'main', `export KUBECONFIG="${kubeconfigPath}"`, 'Enter'], { stdio: 'inherit' });
+            
+            res.json({ 
+                message: 'Kubeconfig applied successfully',
+                path: kubeconfigPath
+            });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to apply kubeconfig: ' + error.message });
+        }
+    });
+    
+    // Clear kubeconfig
+    app.delete('/api/kubeconfig', (req, res) => {
+        try {
+            // Remove kubeconfig file
+            if (fs.existsSync('/tmp/kubeconfig.yaml')) {
+                fs.unlinkSync('/tmp/kubeconfig.yaml');
+            }
+            
+            // Clear from tmux session
+            spawn('tmux', ['send-keys', '-t', 'main', 'unset KUBECONFIG', 'Enter'], { stdio: 'inherit' });
+            
+            res.json({ message: 'Kubeconfig cleared' });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to clear kubeconfig: ' + error.message });
+        }
+    });
+    
     app.listen(8080, () => {
         console.log('Enhanced terminal UI running on port 8080');
     });
@@ -441,17 +553,12 @@ spec:
           # Create uploads directory
           mkdir -p /mnt/k8s-tmux/uploads
           
-          # Install Node.js for the web UI
-          zypper install -y nodejs npm
-          npm install -g express multer
-          
-          # Start the web UI server
-          cd /config && node server.js &
-          
           # Start shared tmux session with colors enabled
           cd /mnt/k8s-tmux &&
           tmux new-session -d -s main 'export TERM=xterm-256color && bash' &&
-          exec /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin tmux attach-session -t main
+          
+          # For now, serve the terminal directly at port 80 via ttyd
+          exec /usr/local/bin/ttyd --port 8080 --interface 0.0.0.0 --writable --check-origin tmux attach-session -t main
         resources:
           requests:
             memory: "512Mi"
