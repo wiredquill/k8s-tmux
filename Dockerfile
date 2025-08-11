@@ -117,7 +117,7 @@ RUN useradd -m -s /bin/zsh dev && \
     echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Configure tmux
-COPY tmux.conf /home/dev/.tmux.conf
+COPY config/tmux.conf /home/dev/.tmux.conf
 
 # Configure shell environments
 USER dev
@@ -148,7 +148,7 @@ RUN echo 'source <(kubectl completion zsh)' >> ~/.zshrc && \
     echo 'alias l="ls -CF"' >> ~/.zshrc
 
 # Copy initialization script
-COPY --chown=dev:dev init.sh /home/dev/init.sh
+COPY --chown=dev:dev config/init.sh /home/dev/init.sh
 RUN chmod +x /home/dev/init.sh
 
 # Create mount points
