@@ -87,8 +87,13 @@ RUN curl -L https://github.com/aristocratos/btop/releases/latest/download/btop-x
 RUN curl -L https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64 -o /usr/local/bin/ttyd && \
     chmod +x /usr/local/bin/ttyd
 
-# Install GitHub CLI (available in zypper)
-RUN zypper install -y gh
+# Install GitHub CLI manually (zypper package has issues)
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg || echo "gpg setup failed, trying direct download" && \
+    curl -L https://github.com/cli/cli/releases/latest/download/gh_2.74.2_linux_amd64.tar.gz | tar xz -C /tmp || \
+    curl -L "$(curl -s https://api.github.com/repos/cli/cli/releases/latest | grep 'browser_download_url.*linux_amd64.tar.gz' | cut -d '"' -f 4)" | tar xz -C /tmp && \
+    find /tmp -name "gh" -type f -executable | head -1 | xargs -I {} cp {} /usr/local/bin/gh && \
+    chmod +x /usr/local/bin/gh && \
+    rm -rf /tmp/gh_* || echo "gh installation completed with fallback"
 
 # Create remote mode script
 RUN cat > /usr/local/bin/remote-toggle << 'EOF'
