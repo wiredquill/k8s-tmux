@@ -1,13 +1,8 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: k8s-tmux
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: k8s-tmux
-  namespace: k8s-tmux
+  namespace: ai-dev
 spec:
   replicas: 1
   selector:
@@ -490,40 +485,436 @@ spec:
           <head>
               <title>{session_name}</title>
               <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+              <meta name="mobile-web-app-capable" content="yes">
+              <meta name="apple-mobile-web-app-capable" content="yes">
+              <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
               <style>
                   :root {{
                       --primary-color: {session_color};
                       --primary-color-dark: {session_color}dd;
+                      --header-height: 60px;
+                      --sidebar-width: 320px;
                   }}
-                  body {{ font-family: Inter, Arial, sans-serif; margin: 0; background: #f5f7fa; }}
-                  .container {{ height: 100vh; display: flex; flex-direction: column; background: white; margin: 8px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }}
-                  .header {{ background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-color-dark) 100%); color: white; padding: 16px; display: flex; justify-content: space-between; align-items: center; border-radius: 12px 12px 0 0; }}
-                  .header h1 {{ margin: 0; font-size: 20px; }}
-                  .main-content {{ flex: 1; display: flex; }}
-                  .terminal-section {{ width: 70%; position: relative; }}
-                  .sidebar {{ width: 30%; padding: 20px; background: #f8fafc; overflow-y: auto; }}
-                  .section {{ background: white; border-radius: 8px; padding: 16px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-                  .section-title {{ font-weight: 600; margin-bottom: 12px; color: #2d3748; font-size: 14px; text-transform: uppercase; }}
-                  .file-browser {{ max-height: 200px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px; background: #f7fafc; }}
-                  .file-item {{ padding: 8px 12px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 8px; transition: all 0.15s ease; }}
-                  .file-item:hover {{ background: #edf2f7; transform: translateX(2px); }}
-                  .terminal-frame {{ width: 100%; height: 100%; border: none; }}
-                  .btn {{ background: var(--primary-color); color: white; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; margin: 4px 2px; font-size: 13px; font-weight: 500; transition: all 0.15s ease; }}
-                  .btn:hover {{ background: var(--primary-color-dark); transform: translateY(-1px); }}
-                  .btn.secondary {{ background: #e2e8f0; color: #4a5568; }}
-                  .input {{ width: 100%; padding: 10px 12px; margin: 6px 0; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 14px; }}
-                  .input:focus {{ outline: none; border-color: var(--primary-color); box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); }}
-                  .debug {{ font-size: 11px; background: #f0f0f0; padding: 8px; border-radius: 4px; margin-top: 8px; color: #666; }}
+                  
+                  * {{
+                      box-sizing: border-box;
+                  }}
+                  
+                  body {{ 
+                      font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; 
+                      margin: 0; 
+                      background: #f5f7fa; 
+                      overflow: hidden;
+                      -webkit-text-size-adjust: 100%;
+                      -webkit-touch-callout: none;
+                      -webkit-user-select: none;
+                      -moz-user-select: none;
+                      -ms-user-select: none;
+                      user-select: none;
+                  }}
+                  
+                  .container {{ 
+                      height: 100vh; 
+                      display: flex; 
+                      flex-direction: column; 
+                      background: white; 
+                      position: relative;
+                  }}
+                  
+                  .header {{ 
+                      background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-color-dark) 100%); 
+                      color: white; 
+                      padding: 12px 16px; 
+                      display: flex; 
+                      justify-content: space-between; 
+                      align-items: center; 
+                      min-height: var(--header-height);
+                      flex-shrink: 0;
+                      z-index: 1000;
+                  }}
+                  
+                  .header h1 {{ 
+                      margin: 0; 
+                      font-size: 18px; 
+                      font-weight: 600;
+                  }}
+                  
+                  .header-controls {{
+                      display: flex;
+                      gap: 8px;
+                      align-items: center;
+                  }}
+                  
+                  .mobile-menu-btn {{
+                      display: none;
+                      background: rgba(255,255,255,0.2);
+                      border: none;
+                      color: white;
+                      padding: 8px;
+                      border-radius: 6px;
+                      cursor: pointer;
+                      font-size: 18px;
+                      transition: background 0.2s;
+                  }}
+                  
+                  .mobile-menu-btn:hover {{
+                      background: rgba(255,255,255,0.3);
+                  }}
+                  
+                  .main-content {{ 
+                      flex: 1; 
+                      display: flex; 
+                      overflow: hidden;
+                      height: calc(100vh - var(--header-height));
+                  }}
+                  
+                  .terminal-section {{ 
+                      flex: 1;
+                      position: relative; 
+                      display: flex;
+                      flex-direction: column;
+                  }}
+                  
+                  .sidebar {{ 
+                      width: var(--sidebar-width);
+                      padding: 16px; 
+                      background: #f8fafc; 
+                      overflow-y: auto; 
+                      border-left: 1px solid #e2e8f0;
+                      flex-shrink: 0;
+                      transition: transform 0.3s ease;
+                  }}
+                  
+                  .section {{ 
+                      background: white; 
+                      border-radius: 8px; 
+                      padding: 16px; 
+                      margin-bottom: 16px; 
+                      box-shadow: 0 2px 4px rgba(0,0,0,0.1); 
+                  }}
+                  
+                  .section-title {{ 
+                      font-weight: 600; 
+                      margin-bottom: 12px; 
+                      color: #2d3748; 
+                      font-size: 14px; 
+                      text-transform: uppercase; 
+                      letter-spacing: 0.5px;
+                  }}
+                  
+                  .file-browser {{ 
+                      max-height: 200px; 
+                      overflow-y: auto; 
+                      border: 1px solid #e2e8f0; 
+                      border-radius: 6px; 
+                      padding: 8px; 
+                      background: #f7fafc; 
+                  }}
+                  
+                  .file-item {{ 
+                      padding: 8px 12px; 
+                      cursor: pointer; 
+                      border-radius: 4px; 
+                      display: flex; 
+                      align-items: center; 
+                      gap: 8px; 
+                      transition: all 0.15s ease; 
+                      min-height: 44px;
+                      -webkit-user-select: none;
+                      -moz-user-select: none;
+                      -ms-user-select: none;
+                      user-select: none;
+                  }}
+                  
+                  .file-item:hover, .file-item:focus {{ 
+                      background: #edf2f7; 
+                      transform: translateX(2px); 
+                  }}
+                  
+                  .terminal-frame {{ 
+                      width: 100%; 
+                      height: 100%; 
+                      border: none; 
+                      background: #000;
+                  }}
+                  
+                  .btn {{ 
+                      background: var(--primary-color); 
+                      color: white; 
+                      border: none; 
+                      padding: 12px 16px; 
+                      border-radius: 6px; 
+                      cursor: pointer; 
+                      margin: 4px 2px; 
+                      font-size: 14px; 
+                      font-weight: 500; 
+                      transition: all 0.15s ease; 
+                      min-height: 44px;
+                      touch-action: manipulation;
+                  }}
+                  
+                  .btn:hover, .btn:focus {{ 
+                      background: var(--primary-color-dark); 
+                      transform: translateY(-1px); 
+                  }}
+                  
+                  .btn:active {{
+                      transform: translateY(0);
+                  }}
+                  
+                  .btn.secondary {{ 
+                      background: #e2e8f0; 
+                      color: #4a5568; 
+                  }}
+                  
+                  .input {{ 
+                      width: 100%; 
+                      padding: 12px; 
+                      margin: 6px 0; 
+                      border: 1px solid #e2e8f0; 
+                      border-radius: 6px; 
+                      font-size: 16px;
+                      min-height: 44px;
+                      -webkit-appearance: none;
+                      -moz-appearance: none;
+                      appearance: none;
+                  }}
+                  
+                  .input:focus {{ 
+                      outline: none; 
+                      border-color: var(--primary-color); 
+                      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); 
+                  }}
+                  
+                  .debug {{ 
+                      font-size: 11px; 
+                      background: #f0f0f0; 
+                      padding: 8px; 
+                      border-radius: 4px; 
+                      margin-top: 8px; 
+                      color: #666; 
+                      word-break: break-all;
+                  }}
                   
                   /* File Upload Styles */
-                  .upload-area {{ border: 2px dashed #e2e8f0; border-radius: 8px; padding: 20px; text-align: center; margin: 10px 0; transition: all 0.3s ease; background: #fafafa; }}
-                  .upload-area.dragover {{ border-color: var(--primary-color); background: rgba(102, 126, 234, 0.1); }}
-                  .upload-area:hover {{ border-color: #cbd5e0; }}
-                  .file-input {{ display: none; }}
+                  .upload-area {{ 
+                      border: 2px dashed #e2e8f0; 
+                      border-radius: 8px; 
+                      padding: 20px; 
+                      text-align: center; 
+                      margin: 10px 0; 
+                      transition: all 0.3s ease; 
+                      background: #fafafa; 
+                      min-height: 80px;
+                      display: flex;
+                      flex-direction: column;
+                      justify-content: center;
+                      cursor: pointer;
+                  }}
+                  
+                  .upload-area.dragover {{ 
+                      border-color: var(--primary-color); 
+                      background: rgba(102, 126, 234, 0.1); 
+                  }}
+                  
+                  .upload-area:hover {{ 
+                      border-color: #cbd5e0; 
+                  }}
+                  
+                  .file-input {{ 
+                      display: none; 
+                  }}
                   
                   /* Drop Zone Overlay */
-                  .drop-overlay {{ position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(102, 126, 234, 0.9); color: white; display: none; align-items: center; justify-content: center; font-size: 24px; z-index: 1000; }}
-                  .drop-overlay.show {{ display: flex; }}
+                  .drop-overlay {{ 
+                      position: fixed; 
+                      top: 0; 
+                      left: 0; 
+                      right: 0; 
+                      bottom: 0; 
+                      background: rgba(102, 126, 234, 0.9); 
+                      color: white; 
+                      display: none; 
+                      align-items: center; 
+                      justify-content: center; 
+                      font-size: 24px; 
+                      z-index: 1000; 
+                  }}
+                  
+                  .drop-overlay.show {{ 
+                      display: flex; 
+                  }}
+                  
+                  /* Terminal Loading Indicator */
+                  .terminal-loading {{
+                      position: absolute;
+                      top: 50%;
+                      left: 50%;
+                      transform: translate(-50%, -50%);
+                      color: #666;
+                      text-align: center;
+                      z-index: 10;
+                  }}
+                  
+                  /* Mobile Styles */
+                  @media (max-width: 768px) {{
+                      .container {{
+                          margin: 0;
+                          border-radius: 0;
+                          height: 100vh;
+                      }}
+                      
+                      .header {{
+                          padding: 12px 16px;
+                          border-radius: 0;
+                      }}
+                      
+                      .header h1 {{
+                          font-size: 16px;
+                      }}
+                      
+                      .mobile-menu-btn {{
+                          display: block;
+                      }}
+                      
+                      .main-content {{
+                          flex-direction: column;
+                      }}
+                      
+                      .terminal-section {{
+                          height: 60vh;
+                          min-height: 300px;
+                      }}
+                      
+                      .sidebar {{
+                          position: fixed;
+                          top: var(--header-height);
+                          right: 0;
+                          bottom: 0;
+                          width: 100%;
+                          max-width: 400px;
+                          transform: translateX(100%);
+                          z-index: 999;
+                          border-left: none;
+                          box-shadow: -4px 0 12px rgba(0,0,0,0.15);
+                      }}
+                      
+                      .sidebar.open {{
+                          transform: translateX(0);
+                      }}
+                      
+                      .sidebar-overlay {{
+                          position: fixed;
+                          top: 0;
+                          left: 0;
+                          right: 0;
+                          bottom: 0;
+                          background: rgba(0,0,0,0.5);
+                          z-index: 998;
+                          display: none;
+                      }}
+                      
+                      .sidebar-overlay.show {{
+                          display: block;
+                      }}
+                      
+                      .btn {{
+                          font-size: 16px;
+                          padding: 14px 20px;
+                      }}
+                      
+                      .file-item {{
+                          min-height: 48px;
+                          font-size: 16px;
+                      }}
+                      
+                      .section {{
+                          margin-bottom: 12px;
+                          padding: 12px;
+                      }}
+                      
+                      .upload-area {{
+                          min-height: 100px;
+                          font-size: 16px;
+                      }}
+                      
+                      .debug {{
+                          font-size: 12px;
+                      }}
+                  }}
+                  
+                  /* Tablet Styles */
+                  @media (min-width: 769px) and (max-width: 1024px) {{
+                      .sidebar {{
+                          width: 280px;
+                      }}
+                      
+                      .terminal-section {{
+                          flex: 1;
+                      }}
+                  }}
+                  
+                  /* Large Desktop Styles */
+                  @media (min-width: 1400px) {{
+                      .container {{
+                          margin: 16px;
+                          border-radius: 16px;
+                      }}
+                      
+                      .sidebar {{
+                          width: 380px;
+                      }}
+                  }}
+                  
+                  /* High DPI Displays */
+                  @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {{
+                      .terminal-frame {{
+                          image-rendering: -webkit-optimize-contrast;
+                          image-rendering: crisp-edges;
+                      }}
+                  }}
+                  
+                  /* Dark mode support */
+                  @media (prefers-color-scheme: dark) {{
+                      body {{
+                          background: #1a202c;
+                      }}
+                      
+                      .container {{
+                          background: #2d3748;
+                      }}
+                      
+                      .sidebar {{
+                          background: #2d3748;
+                          border-left-color: #4a5568;
+                      }}
+                      
+                      .section {{
+                          background: #4a5568;
+                          color: #e2e8f0;
+                      }}
+                      
+                      .file-browser {{
+                          background: #2d3748;
+                          border-color: #4a5568;
+                      }}
+                      
+                      .file-item:hover {{
+                          background: #4a5568;
+                      }}
+                      
+                      .input {{
+                          background: #2d3748;
+                          border-color: #4a5568;
+                          color: #e2e8f0;
+                      }}
+                      
+                      .debug {{
+                          background: #4a5568;
+                          color: #a0aec0;
+                      }}
+                  }}
               </style>
           </head>
           <body>
@@ -531,21 +922,28 @@ spec:
                   <div>📁 Drop files here to upload</div>
               </div>
               
+              <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+              
               <div class="container">
                   <div class="header">
                       <h1 id="sessionTitle">🤖 {session_name}</h1>
-                      <div>
+                      <div class="header-controls">
                           <button class="btn" onclick="refreshFiles()">🔄 Refresh</button>
                           <button class="btn" onclick="testAPI()">🔧 Test API</button>
+                          <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
                       </div>
                   </div>
                   
                   <div class="main-content">
                       <div class="terminal-section">
-                          <iframe class="terminal-frame" id="terminalFrame"></iframe>
+                          <div class="terminal-loading" id="terminalLoading">
+                              <div>🔄 Loading terminal...</div>
+                              <div style="font-size: 14px; margin-top: 8px; color: #999;">Connecting to :7681</div>
+                          </div>
+                          <iframe class="terminal-frame" id="terminalFrame" onload="hideTerminalLoading()" onerror="showTerminalError()"></iframe>
                       </div>
                       
-                      <div class="sidebar">
+                      <div class="sidebar" id="sidebar">
                           <div class="section">
                               <div class="section-title">File Browser</div>
                               <div class="file-browser" id="fileBrowser">
@@ -592,13 +990,135 @@ spec:
               </div>
               
               <script>
+                  // Global variables and initialization
                   let currentPath = '';
-                  let debugEl = document.getElementById('debugInfo');
+                  let debugEl = null;
                   let dragCounter = 0;
+                  let isInitialized = false;
+                  let mobileMenuOpen = false;
                   
-                  function log(msg) {{
-                      console.log(msg);
-                      debugEl.textContent = new Date().toLocaleTimeString() + ': ' + msg;
+                  // Enhanced logging function with error handling
+                  function log(msg, level = 'info') {{
+                      const timestamp = new Date().toLocaleTimeString();
+                      const logMsg = `${{timestamp}}: ${{msg}}`;
+                      
+                      // Console logging
+                      console.log(`[AI-TERMINAL-${{level.toUpperCase()}}] ${{logMsg}}`);
+                      
+                      // Update debug element if available
+                      try {{
+                          if (!debugEl) {{
+                              debugEl = document.getElementById('debugInfo');
+                          }}
+                          if (debugEl) {{
+                              debugEl.textContent = logMsg;
+                              if (level === 'error') {{
+                                  debugEl.style.backgroundColor = '#fed7d7';
+                                  debugEl.style.color = '#c53030';
+                              }} else if (level === 'success') {{
+                                  debugEl.style.backgroundColor = '#c6f6d5';
+                                  debugEl.style.color = '#38a169';
+                              }} else {{
+                                  debugEl.style.backgroundColor = '#f0f0f0';
+                                  debugEl.style.color = '#666';
+                              }}
+                          }}
+                      }} catch (e) {{
+                          console.error('Failed to update debug element:', e);
+                      }}
+                  }}
+                  
+                  // Error handler for unhandled errors
+                  window.addEventListener('error', function(e) {{
+                      log(`JavaScript Error: ${{e.message}} at ${{e.filename}}:${{e.lineno}}`, 'error');
+                  }});
+                  
+                  window.addEventListener('unhandledrejection', function(e) {{
+                      log(`Unhandled Promise Rejection: ${{e.reason}}`, 'error');
+                  }});
+                  
+                  // Mobile Navigation Functions
+                  function toggleSidebar() {{
+                      try {{
+                          const sidebar = document.getElementById('sidebar');
+                          const overlay = document.getElementById('sidebarOverlay');
+                          
+                          if (!sidebar || !overlay) {{
+                              log('Sidebar elements not found', 'error');
+                              return;
+                          }}
+                          
+                          mobileMenuOpen = !mobileMenuOpen;
+                          
+                          if (mobileMenuOpen) {{
+                              sidebar.classList.add('open');
+                              overlay.classList.add('show');
+                              log('Mobile sidebar opened');
+                          }} else {{
+                              sidebar.classList.remove('open');
+                              overlay.classList.remove('show');
+                              log('Mobile sidebar closed');
+                          }}
+                      }} catch (e) {{
+                          log(`Error toggling sidebar: ${{e.message}}`, 'error');
+                      }}
+                  }}
+                  
+                  // Terminal Loading Functions
+                  function hideTerminalLoading() {{
+                      try {{
+                          const loadingEl = document.getElementById('terminalLoading');
+                          if (loadingEl) {{
+                              loadingEl.style.display = 'none';
+                              log('Terminal loaded successfully', 'success');
+                          }}
+                      }} catch (e) {{
+                          log(`Error hiding terminal loading: ${{e.message}}`, 'error');
+                      }}
+                  }}
+                  
+                  function showTerminalError() {{
+                      try {{
+                          const loadingEl = document.getElementById('terminalLoading');
+                          if (loadingEl) {{
+                              loadingEl.innerHTML = `
+                                  <div style="color: #e53e3e;">❌ Terminal connection failed</div>
+                                  <div style="font-size: 14px; margin-top: 8px; color: #999;">
+                                      Check if port 7681 is accessible<br>
+                                      <button class="btn" onclick="retryTerminal()" style="margin-top: 8px; font-size: 12px; padding: 6px 12px;">🔄 Retry</button>
+                                  </div>
+                              `;
+                              log('Terminal connection failed', 'error');
+                          }}
+                      }} catch (e) {{
+                          log(`Error showing terminal error: ${{e.message}}`, 'error');
+                      }}
+                  }}
+                  
+                  function retryTerminal() {{
+                      try {{
+                          const terminalFrame = document.getElementById('terminalFrame');
+                          const loadingEl = document.getElementById('terminalLoading');
+                          
+                          if (loadingEl) {{
+                              loadingEl.innerHTML = `
+                                  <div>🔄 Retrying terminal connection...</div>
+                                  <div style="font-size: 14px; margin-top: 8px; color: #999;">Connecting to :7681</div>
+                              `;
+                              loadingEl.style.display = 'block';
+                          }}
+                          
+                          if (terminalFrame) {{
+                              const currentHost = window.location.hostname;
+                              terminalFrame.src = '';
+                              setTimeout(() => {{
+                                  terminalFrame.src = `http://${{currentHost}}:7681?t=${{Date.now()}}`;
+                                  log('Retrying terminal connection');
+                              }}, 500);
+                          }}
+                      }} catch (e) {{
+                          log(`Error retrying terminal: ${{e.message}}`, 'error');
+                      }}
                   }}
                   
                   // File Upload Functions
@@ -693,52 +1213,74 @@ spec:
                   }});
                   
                   function loadFiles(path = '') {{
-                      log('Loading files for path: "' + path + '"');
-                      
-                      const url = path ? `/api/files?path=${{encodeURIComponent(path)}}&t=${{Date.now()}}` : `/api/files?t=${{Date.now()}}`;
-                      
-                      fetch(url, {{
-                          method: 'GET',
-                          headers: {{
-                              'Accept': 'application/json',
-                              'Cache-Control': 'no-cache'
-                          }}
-                      }})
-                      .then(response => {{
-                          log('Response status: ' + response.status);
-                          if (!response.ok) {{
-                              throw new Error('HTTP ' + response.status + ': ' + response.statusText);
-                          }}
-                          return response.json();
-                      }})
-                      .then(data => {{
-                          log('Files received: ' + (data.files ? data.files.length : 0));
-                          currentPath = data.current_path || '';
+                      try {{
+                          log(`Loading files for path: "${{path}}"`);
                           
+                          // Update browser immediately to show loading state
                           const browser = document.getElementById('fileBrowser');
-                          const files = data.files || [];
-                          
-                          if (files.length === 0) {{
-                              browser.innerHTML = '<div style="padding: 20px; text-align: center; color: #718096;">No files found</div>';
-                          }} else {{
-                              browser.innerHTML = files.map(file => 
-                                  `<div class="file-item" style="display: flex; justify-content: space-between; align-items: center;">
-                                      <div onclick="handleFileClick('${{file.path}}', '${{file.type}}', '${{file.name}}')" style="flex: 1; display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                                          ${{file.type === 'dir' ? '📁' : '📄'}} ${{file.name}}
-                                          ${{file.type === 'file' ? '<span style="color: #718096; font-size: 10px; margin-left: 8px;">(' + formatFileSize(file.size) + ')</span>' : ''}}
-                                      </div>
-                                      ${{file.type === 'file' && file.name !== '..' ? '<button class="btn" style="padding: 4px 8px; font-size: 10px; margin: 0;" onclick="downloadFile(\'' + file.path + '\', \'' + file.name + '\'); event.stopPropagation();">⬇️</button>' : ''}}
-                                  </div>`
-                              ).join('');
+                          if (browser) {{
+                              browser.innerHTML = '<div style="text-align: center; padding: 20px; color: #718096;">🔄 Loading files...</div>';
                           }}
                           
-                          log('File browser updated successfully');
-                      }})
-                      .catch(error => {{
-                          log('Error: ' + error.message);
-                          document.getElementById('fileBrowser').innerHTML = 
-                              '<div style="color: red; padding: 10px;">Error: ' + error.message + '</div>';
-                      }});
+                          const url = path ? `/api/files?path=${{encodeURIComponent(path)}}&t=${{Date.now()}}` : `/api/files?t=${{Date.now()}}`;
+                          
+                          fetch(url, {{
+                              method: 'GET',
+                              headers: {{
+                                  'Accept': 'application/json',
+                                  'Cache-Control': 'no-cache',
+                                  'Pragma': 'no-cache'
+                              }},
+                              timeout: 10000 // 10 second timeout
+                          }})
+                          .then(response => {{
+                              log(`API Response status: ${{response.status}}`);
+                              if (!response.ok) {{
+                                  throw new Error(`HTTP ${{response.status}}: ${{response.statusText}}`);
+                              }}
+                              return response.json();
+                          }})
+                          .then(data => {{
+                              log(`Files received: ${{data.files ? data.files.length : 0}}`, 'success');
+                              currentPath = data.current_path || '';
+                              
+                              const files = data.files || [];
+                              
+                              if (files.length === 0) {{
+                                  browser.innerHTML = '<div style="padding: 20px; text-align: center; color: #718096;">📂 No files found</div>';
+                              }} else {{
+                                  browser.innerHTML = files.map(file => {{
+                                      const escapedPath = file.path.replace(/'/g, "\\'");
+                                      const escapedName = file.name.replace(/'/g, "\\'");
+                                      return `
+                                          <div class="file-item" style="display: flex; justify-content: space-between; align-items: center;">
+                                              <div onclick="handleFileClick('${{escapedPath}}', '${{file.type}}', '${{escapedName}}')" style="flex: 1; display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                                  ${{file.type === 'dir' ? '📁' : '📄'}} ${{file.name}}
+                                                  ${{file.type === 'file' ? `<span style="color: #718096; font-size: 10px; margin-left: 8px;">(${{formatFileSize(file.size)}})</span>` : ''}}
+                                              </div>
+                                              ${{file.type === 'file' && file.name !== '..' ? `<button class="btn" style="padding: 4px 8px; font-size: 10px; margin: 0;" onclick="downloadFile('${{escapedPath}}', '${{escapedName}}'); event.stopPropagation();">⬇️</button>` : ''}}
+                                          </div>
+                                      `;
+                                  }}).join('');
+                              }}
+                              
+                              log('File browser updated successfully', 'success');
+                          }})
+                          .catch(error => {{
+                              log(`File loading error: ${{error.message}}`, 'error');
+                              if (browser) {{
+                                  browser.innerHTML = `
+                                      <div style="color: #e53e3e; padding: 15px; text-align: center;">
+                                          ❌ Error loading files<br>
+                                          <small style="color: #666;">${{error.message}}</small><br>
+                                          <button class="btn" onclick="loadFiles('${{path}}')" style="margin-top: 8px; font-size: 12px; padding: 6px 12px;">🔄 Retry</button>
+                                      </div>
+                                  `;
+                              }}
+                          }});
+                      }} catch (e) {{
+                          log(`Unexpected error in loadFiles: ${{e.message}}`, 'error');
+                      }}
                   }}
                   
                   function formatFileSize(bytes) {{
@@ -860,24 +1402,120 @@ spec:
                       }}
                   }}
                   
-                  // Set terminal source
-                  document.getElementById('terminalFrame').src = '/terminal';
-                  log('Terminal frame src set to /terminal');
-                  
-                  // Load files when ready
-                  if (document.readyState === 'complete') {{
-                      loadFiles();
-                  }} else {{
-                      window.addEventListener('load', loadFiles);
+                  // Enhanced application initialization
+                  function initializeTerminal() {{
+                      try {{
+                          const terminalFrame = document.getElementById('terminalFrame');
+                          const currentHost = window.location.hostname;
+                          
+                          if (terminalFrame) {{
+                              const terminalUrl = `http://${{currentHost}}:7681`;
+                              terminalFrame.src = terminalUrl;
+                              log(`Terminal frame src set to: ${{terminalUrl}}`);
+                              
+                              // Set up terminal timeout
+                              setTimeout(() => {{
+                                  if (document.getElementById('terminalLoading') && 
+                                      document.getElementById('terminalLoading').style.display !== 'none') {{
+                                      log('Terminal loading timeout - showing error', 'error');
+                                      showTerminalError();
+                                  }}
+                              }}, 10000); // 10 second timeout
+                          }} else {{
+                              log('Terminal frame element not found', 'error');
+                          }}
+                      }} catch (e) {{
+                          log(`Error initializing terminal: ${{e.message}}`, 'error');
+                      }}
                   }}
                   
-                  // Retry after delay
+                  // Enhanced app initialization
+                  function initializeApp() {{
+                      try {{
+                          log('🚀 Initializing AI Terminal application...');
+                          
+                          // Initialize debug element reference
+                          debugEl = document.getElementById('debugInfo');
+                          
+                          // Initialize terminal
+                          initializeTerminal();
+                          
+                          // Load files
+                          loadFiles();
+                          
+                          // Set up mobile event listeners
+                          setupMobileListeners();
+                          
+                          isInitialized = true;
+                          log('✅ Application initialized successfully', 'success');
+                          
+                      }} catch (error) {{
+                          log(`❌ Initialization error: ${{error.message}}`, 'error');
+                          console.error('App initialization error:', error);
+                      }}
+                  }}
+                  
+                  function setupMobileListeners() {{
+                      try {{
+                          // Close sidebar when clicking outside on mobile
+                          document.addEventListener('click', function(e) {{
+                              const sidebar = document.getElementById('sidebar');
+                              const mobileBtn = document.querySelector('.mobile-menu-btn');
+                              
+                              if (window.innerWidth <= 768 && mobileMenuOpen && 
+                                  !sidebar.contains(e.target) && !mobileBtn.contains(e.target)) {{
+                                  toggleSidebar();
+                              }}
+                          }});
+                          
+                          // Handle orientation changes
+                          window.addEventListener('orientationchange', function() {{
+                              setTimeout(() => {{
+                                  if (mobileMenuOpen && window.innerWidth > 768) {{
+                                      toggleSidebar();
+                                  }}
+                              }}, 100);
+                          }});
+                          
+                          log('Mobile listeners set up');
+                      }} catch (e) {{
+                          log(`Error setting up mobile listeners: ${{e.message}}`, 'error');
+                      }}
+                  }}
+                  
+                  // Multiple initialization strategies
+                  function startApp() {{
+                      if (document.readyState === 'complete') {{
+                          initializeApp();
+                      }} else if (document.readyState === 'interactive') {{
+                          // DOM is ready, but resources might still be loading
+                          setTimeout(initializeApp, 100);
+                      }} else {{
+                          // Still loading
+                          window.addEventListener('DOMContentLoaded', initializeApp);
+                          window.addEventListener('load', initializeApp);
+                      }}
+                  }}
+                  
+                  // Start immediately if possible
+                  startApp();
+                  
+                  // Fallback retry mechanism
                   setTimeout(function() {{
-                      if (document.getElementById('fileBrowser').textContent.includes('Loading')) {{
-                          log('Retrying file load after delay...');
+                      if (!isInitialized) {{
+                          log('🔄 Fallback initialization attempt...');
+                          initializeApp();
+                      }}
+                  }}, 2000);
+                  
+                  // Additional retry for file loading
+                  setTimeout(function() {{
+                      const browser = document.getElementById('fileBrowser');
+                      if (browser && browser.textContent.includes('Loading')) {{
+                          log('🔄 Retrying file load after delay...');
                           loadFiles();
                       }}
-                  }}, 1000);
+                  }}, 3000);
               </script>
           </body>
           </html>'''
@@ -934,7 +1572,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: k8s-tmux-service
-  namespace: k8s-tmux
+  namespace: ai-dev
 spec:
   selector:
     app: k8s-tmux
