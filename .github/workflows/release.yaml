@@ -115,11 +115,26 @@ jobs:
         fi
         sed -i "s/^appVersion:.*/appVersion: \"$APP_VERSION\"/" charts/k8s-tmux/Chart.yaml
         
-        # Update default image tag in values.yaml
-        sed -i "s/tag: .*/tag: \"$APP_VERSION\"/" charts/k8s-tmux/values.yaml
+        # Update default image tag in values.yaml if it exists
+        if [ -f "charts/k8s-tmux/values.yaml" ]; then
+          sed -i "s/tag: .*/tag: \"$APP_VERSION\"/" charts/k8s-tmux/values.yaml
+        fi
         
         echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
         echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
+
+    - name: Commit Chart Updates First
+      run: |
+        git add charts/k8s-tmux/Chart.yaml
+        if [ -f "charts/k8s-tmux/values.yaml" ]; then
+          git add charts/k8s-tmux/values.yaml
+        fi
+        if git diff --cached --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "chore: update chart to version ${{ env.NEW_VERSION }} with app version ${{ env.APP_VERSION }}"
+          git push origin main
+        fi
 
     - name: Package Helm Chart
       run: |
@@ -158,16 +173,6 @@ jobs:
         fi
         
         git checkout main
-
-    - name: Commit Chart Updates
-      run: |
-        git add charts/k8s-tmux/Chart.yaml charts/k8s-tmux/values.yaml
-        if git diff --cached --quiet; then
-          echo "No changes to commit"
-        else
-          git commit -m "chore: update chart to version ${{ env.NEW_VERSION }} with app version ${{ env.APP_VERSION }}"
-          git push origin main
-        fi
 
     - name: Create GitHub Release for Chart
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'

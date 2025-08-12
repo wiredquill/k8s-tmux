@@ -8,8 +8,8 @@ deploymentName: "k8s-tmux"
 replicaCount: 1
 
 image:
-  repository: k8s-tmux
-  pullPolicy: Never
+  repository: ghcr.io/wiredquill/k8s-tmux
+  pullPolicy: IfNotPresent
   tag: "latest"
 
 nameOverride: ""
