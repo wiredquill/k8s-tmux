@@ -118,7 +118,8 @@ EOF
 RUN chmod +x /usr/local/bin/remote-toggle
 
 # Create user first
-RUN useradd -m -s /bin/zsh dev && \
+RUN groupadd dev && \
+    useradd -m -s /bin/zsh -g dev dev && \
     echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Create tmux run directory after user creation
