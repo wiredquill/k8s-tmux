@@ -117,12 +117,12 @@ fi
 EOF
 RUN chmod +x /usr/local/bin/remote-toggle
 
-# Create tmux run directory
-RUN mkdir -p /run/tmux && chown -R dev:dev /run/tmux
-
-# Create user
+# Create user first
 RUN useradd -m -s /bin/zsh dev && \
     echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Create tmux run directory after user creation
+RUN mkdir -p /run/tmux && chown -R dev:dev /run/tmux
 
 # Configure tmux
 COPY config/tmux.conf /home/dev/.tmux.conf
