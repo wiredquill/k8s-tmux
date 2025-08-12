@@ -1,0 +1,998 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-tmux
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux
+  namespace: k8s-tmux
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux
+    spec:
+      containers:
+      - name: k8s-tmux
+        image: ghcr.io/wiredquill/k8s-tmux:latest
+        ports:
+        - containerPort: 7681
+        - containerPort: 8080
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - |
+          # Create uploads directory and set permissions
+          mkdir -p /mnt/k8s-tmux/uploads
+          chmod 755 /mnt/k8s-tmux/uploads
+          
+          # Create bash profile with colors (avoid permission issues)
+          cat > /tmp/bash_colors << 'BASHEOF'
+export TERM=xterm-256color
+export COLORTERM=truecolor
+export FORCE_COLOR=1
+export CLICOLOR_FORCE=1
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+alias ll='ls -la --color=auto'
+export PS1='\[\e[1;32m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]# '
+BASHEOF
+          
+          # Start shared tmux session with forced colors and source color settings
+          cd /mnt/k8s-tmux &&
+          tmux new-session -d -s main 'source /tmp/bash_colors && bash --login' &&
+          
+          # Start ttyd with proper color support  
+          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin --terminal-type xterm-256color tmux attach-session -t main &
+          
+          # Create the web server with file upload support
+          cd /tmp && cat > server.py << 'PYEOF'
+          #!/usr/bin/env python3
+          import http.server
+          import socketserver
+          import urllib.parse
+          import json
+          import os
+          import cgi
+          import shutil
+          from pathlib import Path
+          
+          class FileHandler(http.server.SimpleHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == '/':
+                      self.send_cyber_ui()
+                  elif self.path == '/api/files':
+                      self.send_file_list()
+                  elif self.path.startswith('/api/download/'):
+                      filename = self.path.split('/')[-1]
+                      self.download_file(filename)
+                  else:
+                      super().do_GET()
+              
+              def do_POST(self):
+                  if self.path == '/api/upload':
+                      self.handle_upload()
+                  elif self.path == '/api/remote-notify':
+                      self.handle_remote_notify()
+                  elif self.path == '/api/send-command':
+                      self.handle_send_command()
+                  elif self.path == '/api/test-ntfy':
+                      self.handle_test_ntfy()
+                  else:
+                      self.send_error(404)
+              
+              def send_cyber_ui(self):
+                  html = '''<!DOCTYPE html>
+          <html>
+          <head>
+              <title>🚀 AI Hacker Terminal</title>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <style>
+                  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Fira+Code:wght@300;400;500&display=swap');
+                  
+                  * { margin: 0; padding: 0; box-sizing: border-box; }
+                  
+                  body { 
+                      background: radial-gradient(ellipse at center, #0a0a0a 0%, #000000 100%);
+                      font-family: 'Fira Code', monospace; 
+                      color: var(--primary-color, #00ff41);
+                      overflow: hidden;
+                      height: 100vh;
+                  }
+                  
+                  .cyber-container {
+                      height: 100vh;
+                      display: flex;
+                      flex-direction: column;
+                      border: 2px solid var(--primary-color, #00ff41);
+                      border-radius: 10px;
+                      margin: 5px;
+                      background: rgba(0, 0, 0, 0.9);
+                      box-shadow: 
+                          0 0 30px var(--primary-color, #00ff41),
+                          inset 0 0 30px rgba(0, 255, 65, 0.1);
+                      position: relative;
+                      overflow: hidden;
+                  }
+                  
+                  .cyber-container::before {
+                      content: '';
+                      position: absolute;
+                      top: 0; left: 0; right: 0; bottom: 0;
+                      background: 
+                          linear-gradient(45deg, transparent 49%, var(--primary-color, #00ff41) 50%, transparent 51%),
+                          linear-gradient(-45deg, transparent 49%, var(--primary-color, #00ff41) 50%, transparent 51%);
+                      background-size: 20px 20px;
+                      opacity: 0.03;
+                      pointer-events: none;
+                      animation: grid-move 20s linear infinite;
+                  }
+                  
+                  @keyframes grid-move {
+                      0% { transform: translate(0, 0); }
+                      100% { transform: translate(20px, 20px); }
+                  }
+                  
+                  .header {
+                      background: linear-gradient(90deg, 
+                          rgba(0, 255, 65, 0.8) 0%, 
+                          rgba(0, 255, 65, 0.3) 50%, 
+                          rgba(0, 255, 65, 0.8) 100%);
+                      color: #000;
+                      padding: 15px 20px;
+                      display: flex;
+                      justify-content: space-between;
+                      align-items: center;
+                      font-family: 'Orbitron', monospace;
+                      font-weight: 700;
+                      border-bottom: 1px solid var(--primary-color, #00ff41);
+                      position: relative;
+                      z-index: 10;
+                  }
+                  
+                  .session-title {
+                      font-size: 24px;
+                      font-weight: 900;
+                      text-transform: uppercase;
+                      letter-spacing: 2px;
+                      text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+                      flex-grow: 1;
+                      text-align: center;
+                  }
+                  
+                  .controls {
+                      display: flex;
+                      gap: 10px;
+                      align-items: center;
+                  }
+                  
+                  .cyber-btn {
+                      background: rgba(0, 0, 0, 0.8);
+                      color: var(--primary-color, #00ff41);
+                      border: 1px solid var(--primary-color, #00ff41);
+                      padding: 8px 15px;
+                      border-radius: 5px;
+                      cursor: pointer;
+                      font-family: 'Orbitron', monospace;
+                      font-weight: 400;
+                      font-size: 12px;
+                      text-transform: uppercase;
+                      letter-spacing: 1px;
+                      transition: all 0.3s ease;
+                      position: relative;
+                      overflow: hidden;
+                  }
+                  
+                  .cyber-btn:hover {
+                      background: var(--primary-color, #00ff41);
+                      color: #000;
+                      box-shadow: 0 0 20px var(--primary-color, #00ff41);
+                  }
+                  
+                  .cyber-btn.active {
+                      background: var(--primary-color, #00ff41);
+                      color: #000;
+                      box-shadow: 0 0 15px var(--primary-color, #00ff41);
+                  }
+                  
+                  .main-content {
+                      flex-grow: 1;
+                      display: flex;
+                      position: relative;
+                      z-index: 5;
+                  }
+                  
+                  .terminal-section {
+                      width: 66.66%;
+                      position: relative;
+                      border-right: 1px solid var(--primary-color, #00ff41);
+                  }
+                  
+                  .terminal-section.fullscreen {
+                      width: calc(100% - 40px);
+                      position: fixed;
+                      top: 20px;
+                      left: 20px;
+                      right: 20px;
+                      bottom: 20px;
+                      z-index: 1000;
+                      border: 2px solid var(--primary-color, #00ff41);
+                      border-radius: 10px;
+                      background: rgba(0, 0, 0, 0.95);
+                  }
+                  
+                  .terminal-frame {
+                      width: 100%;
+                      height: 100%;
+                      border: none;
+                      background: #000;
+                  }
+                  
+                  .sidebar {
+                      width: 33.33%;
+                      display: flex;
+                      flex-direction: column;
+                      background: rgba(0, 0, 0, 0.5);
+                      overflow-y: auto;
+                  }
+                  
+                  .sidebar-section {
+                      border-bottom: 1px solid var(--primary-color, #00ff41);
+                      margin: 10px;
+                      padding-bottom: 10px;
+                  }
+                  
+                  .sidebar-title {
+                      font-family: 'Orbitron', monospace;
+                      font-weight: 700;
+                      font-size: 14px;
+                      text-transform: uppercase;
+                      letter-spacing: 1px;
+                      margin-bottom: 10px;
+                      color: var(--primary-color, #00ff41);
+                      text-shadow: 0 0 5px var(--primary-color, #00ff41);
+                  }
+                  
+                  .file-browser {
+                      max-height: 200px;
+                      overflow-y: auto;
+                      background: rgba(0, 20, 0, 0.3);
+                      border: 1px solid var(--primary-color, #00ff41);
+                      border-radius: 5px;
+                      padding: 5px;
+                  }
+                  
+                  .file-item {
+                      padding: 3px 5px;
+                      cursor: pointer;
+                      border-radius: 3px;
+                      transition: all 0.2s;
+                      font-size: 11px;
+                      display: flex;
+                      justify-content: space-between;
+                      align-items: center;
+                  }
+                  
+                  .file-item:hover {
+                      background: rgba(0, 255, 65, 0.2);
+                      box-shadow: 0 0 5px rgba(0, 255, 65, 0.3);
+                  }
+                  
+                  .file-download {
+                      opacity: 0.7;
+                      font-size: 10px;
+                  }
+                  
+                  .file-download:hover {
+                      opacity: 1;
+                  }
+                  
+                  .drop-zone {
+                      border: 2px dashed var(--primary-color, #00ff41);
+                      border-radius: 5px;
+                      padding: 20px;
+                      text-align: center;
+                      background: rgba(0, 20, 0, 0.2);
+                      transition: all 0.3s;
+                      cursor: pointer;
+                      min-height: 80px;
+                      display: flex;
+                      flex-direction: column;
+                      justify-content: center;
+                  }
+                  
+                  .drop-zone:hover, .drop-zone.dragover {
+                      background: rgba(0, 255, 65, 0.1);
+                      box-shadow: 0 0 15px rgba(0, 255, 65, 0.3);
+                  }
+                  
+                  .config-panel {
+                      background: rgba(0, 20, 0, 0.3);
+                      border: 1px solid var(--primary-color, #00ff41);
+                      border-radius: 5px;
+                      padding: 10px;
+                  }
+                  
+                  .config-row {
+                      display: flex;
+                      align-items: center;
+                      margin: 8px 0;
+                      gap: 10px;
+                  }
+                  
+                  .config-label {
+                      min-width: 80px;
+                      font-size: 11px;
+                      text-transform: uppercase;
+                      letter-spacing: 0.5px;
+                  }
+                  
+                  .config-input, .config-select {
+                      flex-grow: 1;
+                      background: rgba(0, 0, 0, 0.8);
+                      color: var(--primary-color, #00ff41);
+                      border: 1px solid var(--primary-color, #00ff41);
+                      padding: 5px;
+                      border-radius: 3px;
+                      font-family: 'Fira Code', monospace;
+                      font-size: 11px;
+                  }
+                  
+                  .status-indicator {
+                      position: absolute;
+                      top: 10px;
+                      right: 10px;
+                      padding: 5px 10px;
+                      border-radius: 15px;
+                      font-size: 11px;
+                      font-family: 'Orbitron', monospace;
+                      font-weight: 700;
+                      text-transform: uppercase;
+                      letter-spacing: 1px;
+                      z-index: 20;
+                  }
+                  
+                  .status-remote-on {
+                      background: #ff4444;
+                      color: white;
+                      box-shadow: 0 0 10px #ff4444;
+                      animation: pulse 2s infinite;
+                  }
+                  
+                  .status-remote-off {
+                      background: rgba(68, 68, 68, 0.8);
+                      color: #ccc;
+                      border: 1px solid #666;
+                  }
+                  
+                  @keyframes pulse {
+                      0%, 100% { opacity: 1; }
+                      50% { opacity: 0.7; }
+                  }
+                  
+                  .fullscreen-btn {
+                      position: absolute;
+                      top: 10px;
+                      right: 10px;
+                      z-index: 15;
+                  }
+                  
+                  /* Color themes */
+                  .theme-matrix { --primary-color: #00ff41; }
+                  .theme-cyber { --primary-color: #00ffff; }
+                  .theme-neon { --primary-color: #ff0080; }
+                  .theme-orange { --primary-color: #ff8800; }
+                  .theme-purple { --primary-color: #8800ff; }
+                  .theme-red { --primary-color: #ff4444; }
+                  .theme-blue { --primary-color: #4488ff; }
+                  
+                  .upload-progress {
+                      margin-top: 10px;
+                      padding: 5px;
+                      background: rgba(0, 20, 0, 0.5);
+                      border-radius: 3px;
+                      font-size: 10px;
+                      display: none;
+                  }
+              </style>
+          </head>
+          <body>
+              <div class="cyber-container theme-matrix" id="cyberContainer">
+                  <div class="header">
+                      <div class="controls">
+                          <button class="cyber-btn" onclick="cycleTheme()">🎨 Theme</button>
+                          <button class="cyber-btn" onclick="changeTitle()">📝 Title</button>
+                      </div>
+                      <div class="session-title" id="sessionTitle">AI Hacker Terminal</div>
+                      <div class="controls">
+                          <button class="cyber-btn" id="remoteBtn" onclick="toggleRemote()">📡 Remote</button>
+                          <button class="cyber-btn" onclick="refreshFiles()">🔄 Refresh</button>
+                      </div>
+                  </div>
+                  
+                  <div class="status-indicator status-remote-off" id="statusIndicator">Remote: OFF</div>
+                  
+                  <div class="main-content">
+                      <div class="terminal-section" id="terminalSection">
+                          <button class="cyber-btn fullscreen-btn" onclick="toggleFullscreen()">⛶ Full</button>
+                          <iframe class="terminal-frame" src="/terminal" id="terminalFrame"></iframe>
+                      </div>
+                      
+                      <div class="sidebar" id="sidebar">
+                          <div class="sidebar-section">
+                              <div class="sidebar-title">📁 Files (/mnt)</div>
+                              <div class="file-browser" id="fileBrowser">
+                                  <div style="text-align: center; padding: 20px; opacity: 0.7;">Loading...</div>
+                              </div>
+                          </div>
+                          
+                          <div class="sidebar-section">
+                              <div class="sidebar-title">📤 Upload</div>
+                              <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+                                  <div>🎯 DROP FILES HERE</div>
+                                  <div style="font-size: 10px; margin-top: 5px;">or click to browse</div>
+                              </div>
+                              <div class="upload-progress" id="uploadProgress"></div>
+                              <input type="file" id="fileInput" style="display: none" multiple>
+                          </div>
+                          
+                          <div class="sidebar-section">
+                              <div class="sidebar-title">⏰ Timed Messages</div>
+                              <div class="config-panel">
+                                  <div class="config-row">
+                                      <span class="config-label">Message:</span>
+                                      <input type="text" class="config-input" id="timedMessage" placeholder="Enter command or message" value="ls -la">
+                                  </div>
+                                  <div class="config-row">
+                                      <span class="config-label">Delay (s):</span>
+                                      <input type="number" class="config-input" id="messageDelay" value="5" min="1" max="3600">
+                                  </div>
+                                  <div class="config-row">
+                                      <button class="cyber-btn" onclick="scheduleMessage()" style="width: 100%; font-size: 10px;">⏰ Schedule</button>
+                                  </div>
+                                  <div class="config-row">  
+                                      <button class="cyber-btn" onclick="cancelScheduled()" style="width: 100%; font-size: 10px;">❌ Cancel</button>
+                                  </div>
+                                  <div id="scheduleStatus" style="font-size: 10px; margin-top: 5px; opacity: 0.8;"></div>
+                              </div>
+                          </div>
+                          
+                          <div class="sidebar-section">
+                              <div class="sidebar-title">⚙️ Config</div>
+                              <div class="config-panel">
+                                  <div class="config-row">
+                                      <span class="config-label">NTFY:</span>
+                                      <input type="text" class="config-input" id="ntfyTopic" value="ai_communication" placeholder="Topic">
+                                  </div>
+                                  <div class="config-row">
+                                      <button class="cyber-btn" onclick="testRemote()" style="width: 100%; font-size: 10px;">🧪 Test Remote</button>
+                                  </div>
+                                  <div class="config-row">
+                                      <button class="cyber-btn" onclick="showKubeHelp()" style="width: 100%; font-size: 10px;">🔧 Kubectl Help</button>
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+              
+              <script>
+                  let remoteMode = false;
+                  let currentTheme = 'theme-matrix';
+                  let isFullscreen = false;
+                  let scheduledTimeout = null;
+                  let countdownInterval = null;
+                  const themes = ['theme-matrix', 'theme-cyber', 'theme-neon', 'theme-orange', 'theme-purple', 'theme-red', 'theme-blue'];
+                  
+                  let currentPath = '';
+                  
+                  // Load files on startup
+                  function loadFiles(path = '') {
+                      const url = path ? `/api/files?path=${encodeURIComponent(path)}` : '/api/files';
+                      fetch(url)
+                          .then(response => response.json())
+                          .then(data => {
+                              const browser = document.getElementById('fileBrowser');
+                              currentPath = data.current_path || '';
+                              
+                              if (data.files.length === 0) {
+                                  browser.innerHTML = '<div style="text-align: center; padding: 10px; opacity: 0.7;">No files found</div>';
+                                  return;
+                              }
+                              
+                              browser.innerHTML = data.files.map(file => `
+                                  <div class="file-item" onclick="handleFileClick('${file.path}', '${file.type}', '${file.name}')">
+                                      <span>${file.type === 'dir' ? '📁' : '📄'} ${file.name}</span>
+                                      ${file.type === 'file' ? `<span class="file-download" onclick="event.stopPropagation(); downloadFile('${file.name}')">⬇️</span>` : ''}
+                                  </div>
+                              `).join('');
+                          })
+                          .catch(error => {
+                              document.getElementById('fileBrowser').innerHTML = '<div style="color: red; padding: 10px;">Error loading files</div>';
+                          });
+                  }
+                  
+                  function handleFileClick(path, type, name) {
+                      if (type === 'dir') {
+                          loadFiles(path);
+                      } else {
+                          // For files, you could add preview or edit functionality here
+                          console.log('File clicked:', name);
+                      }
+                  }
+                  
+                  function refreshFiles() {
+                      loadFiles(currentPath);
+                  }
+                  
+                  function downloadFile(filename) {
+                      window.open(`/api/download/${filename}`, '_blank');
+                  }
+                  
+                  function loadConfig() {
+                      const title = localStorage.getItem('sessionTitle') || 'AI Hacker Terminal';
+                      const theme = localStorage.getItem('sessionTheme') || 'theme-matrix';
+                      document.getElementById('sessionTitle').textContent = title;
+                      document.getElementById('cyberContainer').className = 'cyber-container ' + theme;
+                      currentTheme = theme;
+                  }
+                  
+                  function cycleTheme() {
+                      const currentIndex = themes.indexOf(currentTheme);
+                      const nextTheme = themes[(currentIndex + 1) % themes.length];
+                      currentTheme = nextTheme;
+                      document.getElementById('cyberContainer').className = 'cyber-container ' + nextTheme;
+                      localStorage.setItem('sessionTheme', nextTheme);
+                  }
+                  
+                  function changeTitle() {
+                      const newTitle = prompt('🚀 Enter session title:', document.getElementById('sessionTitle').textContent);
+                      if (newTitle) {
+                          document.getElementById('sessionTitle').textContent = newTitle;
+                          localStorage.setItem('sessionTitle', newTitle);
+                      }
+                  }
+                  
+                  function toggleRemote() {
+                      remoteMode = !remoteMode;
+                      const status = document.getElementById('statusIndicator');
+                      const btn = document.getElementById('remoteBtn');
+                      
+                      if (remoteMode) {
+                          status.textContent = 'AI ACTIVE';
+                          status.className = 'status-indicator status-remote-on';
+                          btn.classList.add('active');
+                          sendNotification('🟢 AI Remote mode ENABLED - Session active for Claude interactions');
+                      } else {
+                          status.textContent = 'Remote: OFF';
+                          status.className = 'status-indicator status-remote-off';
+                          btn.classList.remove('active');
+                          sendNotification('🔴 AI Remote mode DISABLED');
+                      }
+                  }
+                  
+                  function sendNotification(message) {
+                      const topic = document.getElementById('ntfyTopic').value;
+                      fetch(`https://ntfy.wiredquill.com/${topic}`, {
+                          method: 'POST',
+                          headers: { 'Title': '🚀 AI Hacker Terminal' },
+                          body: message
+                      });
+                  }
+                  
+                  function testRemote() {
+                      const topic = document.getElementById('ntfyTopic').value;
+                      fetch('/api/test-ntfy', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ 
+                              topic: topic,
+                              message: '🧪 Test notification from AI Terminal - Server connectivity check!'
+                          })
+                      })
+                      .then(response => response.json())
+                      .then(result => {
+                          if (result.success) {
+                              alert('🧪 Test notification sent successfully!');
+                          } else {
+                              alert('❌ Test failed: ' + (result.error || 'Unknown error'));
+                          }
+                      })
+                      .catch(error => {
+                          alert('❌ Network error: ' + error.message);
+                      });
+                  }
+                  
+                  function toggleFullscreen() {
+                      const terminal = document.getElementById('terminalSection');
+                      const sidebar = document.getElementById('sidebar');
+                      
+                      isFullscreen = !isFullscreen;
+                      
+                      if (isFullscreen) {
+                          terminal.classList.add('fullscreen');
+                          sidebar.style.display = 'none';
+                      } else {
+                          terminal.classList.remove('fullscreen');
+                          sidebar.style.display = 'flex';
+                      }
+                  }
+                  
+                  function showKubeHelp() {
+                      alert('🔧 Kubectl Setup:\\n\\n1. In terminal:\\n   source /tmp/kubeconfig-helper.sh\\n\\n2. Set config:\\n   kcset -\\n   (paste your YAML)\\n\\n3. Test:\\n   kubectl get nodes\\n\\n4. Use tools:\\n   k9s, helm, kubectx');
+                  }
+                  
+                  // File upload handling
+                  document.getElementById('fileInput').addEventListener('change', function(e) {
+                      uploadFiles(e.target.files);
+                  });
+                  
+                  function uploadFiles(files) {
+                      const progress = document.getElementById('uploadProgress');
+                      progress.style.display = 'block';
+                      progress.textContent = 'Uploading...';
+                      
+                      for (let file of files) {
+                          const formData = new FormData();
+                          formData.append('file', file);
+                          
+                          fetch('/api/upload', {
+                              method: 'POST',
+                              body: formData
+                          })
+                          .then(response => response.json())
+                          .then(result => {
+                              progress.textContent = `✅ Uploaded: ${file.name}`;
+                              setTimeout(() => {
+                                  progress.style.display = 'none';
+                                  loadFiles(); // Refresh file list
+                              }, 2000);
+                          })
+                          .catch(error => {
+                              progress.textContent = `❌ Upload failed: ${file.name}`;
+                              setTimeout(() => progress.style.display = 'none', 3000);
+                          });
+                      }
+                  }
+                  
+                  // Drag and drop
+                  const dropZone = document.getElementById('dropZone');
+                  
+                  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                      dropZone.addEventListener(eventName, preventDefaults, false);
+                  });
+                  
+                  function preventDefaults(e) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                  }
+                  
+                  ['dragenter', 'dragover'].forEach(eventName => {
+                      dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'), false);
+                  });
+                  
+                  ['dragleave', 'drop'].forEach(eventName => {
+                      dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'), false);
+                  });
+                  
+                  dropZone.addEventListener('drop', function(e) {
+                      uploadFiles(e.dataTransfer.files);
+                  }, false);
+                  
+                  // Terminal iframe source
+                  document.getElementById('terminalFrame').src = `http://${window.location.hostname}:7681`;
+                  
+                  // Timed message functions
+                  function scheduleMessage() {
+                      const message = document.getElementById('timedMessage').value.trim();
+                      const delay = parseInt(document.getElementById('messageDelay').value);
+                      
+                      if (!message) {
+                          alert('Please enter a message or command');
+                          return;
+                      }
+                      
+                      // Cancel any existing schedule
+                      cancelScheduled();
+                      
+                      const status = document.getElementById('scheduleStatus');
+                      let countdown = delay;
+                      
+                      // Update countdown display
+                      countdownInterval = setInterval(() => {
+                          status.textContent = `⏰ Sending in ${countdown}s: "${message}"`;
+                          countdown--;
+                          
+                          if (countdown < 0) {
+                              clearInterval(countdownInterval);
+                          }
+                      }, 1000);
+                      
+                      // Schedule the message
+                      scheduledTimeout = setTimeout(() => {
+                          sendTimedMessage(message);
+                          status.textContent = '✅ Message sent!';
+                          setTimeout(() => status.textContent = '', 3000);
+                          scheduledTimeout = null;
+                          clearInterval(countdownInterval);
+                      }, delay * 1000);
+                      
+                      status.textContent = `⏰ Sending in ${delay}s: "${message}"`;
+                  }
+                  
+                  function cancelScheduled() {
+                      if (scheduledTimeout) {
+                          clearTimeout(scheduledTimeout);
+                          scheduledTimeout = null;
+                      }
+                      if (countdownInterval) {
+                          clearInterval(countdownInterval);
+                          countdownInterval = null;
+                      }
+                      document.getElementById('scheduleStatus').textContent = '❌ Cancelled';
+                      setTimeout(() => document.getElementById('scheduleStatus').textContent = '', 2000);
+                  }
+                  
+                  function sendTimedMessage(message) {
+                      // Send the message to the terminal
+                      fetch('/api/send-command', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ command: message })
+                      })
+                      .then(response => response.json())
+                      .then(result => {
+                          console.log('Command sent:', message);
+                          if (remoteMode) {
+                              sendNotification(`🤖 Automated command executed: ${message}`);
+                          }
+                      })
+                      .catch(error => {
+                          console.error('Failed to send command:', error);
+                      });
+                  }
+                  
+                  // Load everything on startup
+                  loadConfig();
+                  loadFiles();
+              </script>
+          </body>
+          </html>'''
+                  
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/html')
+                  self.end_headers()
+                  self.wfile.write(html.encode())
+              
+              def send_file_list(self):
+                  try:
+                      path_param = self.path.split('?path=')[-1] if '?path=' in self.path else ''
+                      current_path = Path('/mnt/k8s-tmux') / path_param if path_param else Path('/mnt/k8s-tmux')
+                      
+                      files = []
+                      if current_path.exists() and current_path.is_dir():
+                          # Add parent directory link if not at root
+                          if str(current_path) != '/mnt/k8s-tmux':
+                              parent = current_path.parent.relative_to(Path('/mnt/k8s-tmux'))
+                              files.append({
+                                  'name': '..',
+                                  'type': 'dir',
+                                  'path': str(parent) if str(parent) != '.' else '',
+                                  'size': 0
+                              })
+                          
+                          for item in sorted(current_path.iterdir()):
+                              rel_path = item.relative_to(Path('/mnt/k8s-tmux'))
+                              files.append({
+                                  'name': item.name,
+                                  'type': 'dir' if item.is_dir() else 'file',
+                                  'path': str(rel_path),
+                                  'size': item.stat().st_size if item.is_file() else 0
+                              })
+                      
+                      self.send_response(200)
+                      self.send_header('Content-type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps({
+                          'files': files,
+                          'current_path': str(current_path.relative_to(Path('/mnt/k8s-tmux'))) if str(current_path) != '/mnt/k8s-tmux' else ''
+                      }).encode())
+                  except Exception as e:
+                      self.send_error(500, str(e))
+              
+              def handle_upload(self):
+                  try:
+                      content_type = self.headers['content-type']
+                      if not content_type.startswith('multipart/form-data'):
+                          self.send_error(400, 'Expected multipart/form-data')
+                          return
+                      
+                      form = cgi.FieldStorage(
+                          fp=self.rfile,
+                          headers=self.headers,
+                          environ={'REQUEST_METHOD': 'POST'}
+                      )
+                      
+                      if 'file' not in form:
+                          self.send_error(400, 'No file uploaded')
+                          return
+                      
+                      file_item = form['file']
+                      if not file_item.filename:
+                          self.send_error(400, 'No filename')
+                          return
+                      
+                      # Save file to uploads directory
+                      upload_path = Path('/mnt/k8s-tmux/uploads') / file_item.filename
+                      upload_path.parent.mkdir(exist_ok=True)
+                      
+                      with open(upload_path, 'wb') as f:
+                          f.write(file_item.file.read())
+                      
+                      self.send_response(200)
+                      self.send_header('Content-type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps({
+                          'success': True,
+                          'filename': file_item.filename,
+                          'path': str(upload_path)
+                      }).encode())
+                      
+                  except Exception as e:
+                      self.send_error(500, str(e))
+              
+              def download_file(self, filename):
+                  try:
+                      file_path = Path('/mnt/k8s-tmux') / filename
+                      if not file_path.exists() or not file_path.is_file():
+                          self.send_error(404, 'File not found')
+                          return
+                      
+                      self.send_response(200)
+                      self.send_header('Content-type', 'application/octet-stream')
+                      self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+                      self.end_headers()
+                      
+                      with open(file_path, 'rb') as f:
+                          shutil.copyfileobj(f, self.wfile)
+                          
+                  except Exception as e:
+                      self.send_error(500, str(e))
+              
+              def handle_send_command(self):
+                  try:
+                      content_length = int(self.headers['Content-Length'])
+                      post_data = self.rfile.read(content_length)
+                      data = json.loads(post_data.decode('utf-8'))
+                      
+                      command = data.get('command', '').strip()
+                      if not command:
+                          self.send_error(400, 'No command provided')
+                          return
+                      
+                      # Send command to tmux session
+                      import subprocess
+                      result = subprocess.run([
+                          'tmux', 'send-keys', '-t', 'main', command, 'Enter'
+                      ], capture_output=True, text=True)
+                      
+                      if result.returncode == 0:
+                          self.send_response(200)
+                          self.send_header('Content-type', 'application/json')
+                          self.end_headers()
+                          self.wfile.write(json.dumps({
+                              'success': True,
+                              'command': command,
+                              'message': 'Command sent to terminal'
+                          }).encode())
+                      else:
+                          self.send_error(500, f'Failed to send command: {result.stderr}')
+                          
+                  except Exception as e:
+                      self.send_error(500, str(e))
+              
+              def handle_test_ntfy(self):
+                  try:
+                      content_length = int(self.headers['Content-Length'])
+                      post_data = self.rfile.read(content_length)
+                      data = json.loads(post_data.decode('utf-8'))
+                      
+                      topic = data.get('topic', 'ai_communication')
+                      message = data.get('message', 'Test notification from AI Terminal')
+                      
+                      # Test ntfy notification
+                      import subprocess
+                      result = subprocess.run([
+                          'curl', '-s', '-X', 'POST',
+                          f'https://ntfy.wiredquill.com/{topic}',
+                          '-H', 'Title: 🧪 AI Terminal Test',
+                          '-d', message
+                      ], capture_output=True, text=True)
+                      
+                      self.send_response(200)
+                      self.send_header('Content-type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps({
+                          'success': result.returncode == 0,
+                          'output': result.stdout,
+                          'error': result.stderr if result.returncode != 0 else None
+                      }).encode())
+                      
+                  except Exception as e:
+                      self.send_error(500, str(e))
+          
+          if __name__ == '__main__':
+              port = 8080
+              with socketserver.TCPServer(("", port), FileHandler) as httpd:
+                  print(f"🚀 Ultimate AI Terminal server running on port {port}")
+                  httpd.serve_forever()
+          PYEOF
+          
+          chmod +x server.py
+          python3 server.py &
+          
+          # Wait for services to start
+          sleep 3
+          echo "🚀 Ultimate AI Terminal ready!"
+          echo "🎯 Web UI: port 8080"
+          echo "🔧 Terminal: port 7681" 
+          echo "🌈 Colors: FORCED ON"
+          
+          # Keep container running
+          wait
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        env:
+        - name: TERM
+          value: "xterm-256color"
+        - name: COLORTERM
+          value: "truecolor"
+        - name: FORCE_COLOR
+          value: "1"
+        - name: CLICOLOR_FORCE
+          value: "1"
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: wiredquill-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/WiredQuill
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-service
+  namespace: k8s-tmux
+spec:
+  selector:
+    app: k8s-tmux
+  ports:
+  - name: web-ui
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+  - name: terminal
+    protocol: TCP
+    port: 7681
+    targetPort: 7681
+  type: LoadBalancer

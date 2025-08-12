@@ -1,0 +1,627 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-tmux
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux
+  namespace: k8s-tmux
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux
+    spec:
+      containers:
+      - name: k8s-tmux
+        image: ghcr.io/wiredquill/k8s-tmux:latest
+        ports:
+        - containerPort: 7681
+        - containerPort: 8080
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - |
+          # Create uploads directory
+          mkdir -p /mnt/k8s-tmux/uploads
+          
+          # Start shared tmux session with proper colors
+          cd /mnt/k8s-tmux &&
+          tmux new-session -d -s main 'export TERM=xterm-256color && export COLORTERM=truecolor && bash --login' &&
+          
+          # Start ttyd with proper color support
+          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin --terminal-type xterm-256color tmux attach-session -t main &
+          
+          # Create futuristic web UI
+          cd /tmp && cat > cyber-ui.html << 'HTMLEOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>🚀 K8s-TMux Cyber Terminal</title>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <style>
+                  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Fira+Code:wght@300;400;500&display=swap');
+                  
+                  * { margin: 0; padding: 0; box-sizing: border-box; }
+                  
+                  body { 
+                      background: radial-gradient(ellipse at center, #0a0a0a 0%, #000000 100%);
+                      font-family: 'Fira Code', monospace; 
+                      color: var(--primary-color, #00ff41);
+                      overflow: hidden;
+                      height: 100vh;
+                  }
+                  
+                  .cyber-container {
+                      height: 100vh;
+                      display: flex;
+                      flex-direction: column;
+                      border: 2px solid var(--primary-color, #00ff41);
+                      border-radius: 10px;
+                      margin: 5px;
+                      background: rgba(0, 0, 0, 0.9);
+                      box-shadow: 
+                          0 0 30px var(--primary-color, #00ff41),
+                          inset 0 0 30px rgba(0, 255, 65, 0.1);
+                      position: relative;
+                      overflow: hidden;
+                  }
+                  
+                  .cyber-container::before {
+                      content: '';
+                      position: absolute;
+                      top: 0; left: 0; right: 0; bottom: 0;
+                      background: 
+                          linear-gradient(45deg, transparent 49%, var(--primary-color, #00ff41) 50%, transparent 51%),
+                          linear-gradient(-45deg, transparent 49%, var(--primary-color, #00ff41) 50%, transparent 51%);
+                      background-size: 20px 20px;
+                      opacity: 0.03;
+                      pointer-events: none;
+                      animation: grid-move 20s linear infinite;
+                  }
+                  
+                  @keyframes grid-move {
+                      0% { transform: translate(0, 0); }
+                      100% { transform: translate(20px, 20px); }
+                  }
+                  
+                  .header {
+                      background: linear-gradient(90deg, 
+                          rgba(0, 255, 65, 0.8) 0%, 
+                          rgba(0, 255, 65, 0.3) 50%, 
+                          rgba(0, 255, 65, 0.8) 100%);
+                      color: #000;
+                      padding: 15px 20px;
+                      display: flex;
+                      justify-content: space-between;
+                      align-items: center;
+                      font-family: 'Orbitron', monospace;
+                      font-weight: 700;
+                      border-bottom: 1px solid var(--primary-color, #00ff41);
+                      position: relative;
+                      z-index: 10;
+                  }
+                  
+                  .session-title {
+                      font-size: 24px;
+                      font-weight: 900;
+                      text-transform: uppercase;
+                      letter-spacing: 2px;
+                      text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+                      flex-grow: 1;
+                      text-align: center;
+                  }
+                  
+                  .controls {
+                      display: flex;
+                      gap: 10px;
+                      align-items: center;
+                  }
+                  
+                  .cyber-btn {
+                      background: rgba(0, 0, 0, 0.8);
+                      color: var(--primary-color, #00ff41);
+                      border: 1px solid var(--primary-color, #00ff41);
+                      padding: 8px 15px;
+                      border-radius: 5px;
+                      cursor: pointer;
+                      font-family: 'Orbitron', monospace;
+                      font-weight: 400;
+                      font-size: 12px;
+                      text-transform: uppercase;
+                      letter-spacing: 1px;
+                      transition: all 0.3s ease;
+                      position: relative;
+                      overflow: hidden;
+                  }
+                  
+                  .cyber-btn::before {
+                      content: '';
+                      position: absolute;
+                      top: 0; left: -100%;
+                      width: 100%; height: 100%;
+                      background: linear-gradient(90deg, transparent, var(--primary-color, #00ff41), transparent);
+                      transition: left 0.5s;
+                  }
+                  
+                  .cyber-btn:hover::before {
+                      left: 100%;
+                  }
+                  
+                  .cyber-btn:hover {
+                      background: var(--primary-color, #00ff41);
+                      color: #000;
+                      box-shadow: 0 0 20px var(--primary-color, #00ff41);
+                      text-shadow: none;
+                  }
+                  
+                  .cyber-btn.active {
+                      background: var(--primary-color, #00ff41);
+                      color: #000;
+                      box-shadow: 0 0 15px var(--primary-color, #00ff41);
+                  }
+                  
+                  .main-content {
+                      flex-grow: 1;
+                      display: flex;
+                      position: relative;
+                      z-index: 5;
+                  }
+                  
+                  .terminal-section {
+                      width: 66.66%;
+                      position: relative;
+                      border-right: 1px solid var(--primary-color, #00ff41);
+                  }
+                  
+                  .terminal-section.fullscreen {
+                      width: calc(100% - 40px);
+                      position: fixed;
+                      top: 20px;
+                      left: 20px;
+                      right: 20px;
+                      bottom: 20px;
+                      z-index: 1000;
+                      border: 2px solid var(--primary-color, #00ff41);
+                      border-radius: 10px;
+                      background: rgba(0, 0, 0, 0.95);
+                  }
+                  
+                  .terminal-frame {
+                      width: 100%;
+                      height: 100%;
+                      border: none;
+                      background: #000;
+                  }
+                  
+                  .sidebar {
+                      width: 33.33%;
+                      display: flex;
+                      flex-direction: column;
+                      background: rgba(0, 0, 0, 0.5);
+                  }
+                  
+                  .sidebar-section {
+                      border-bottom: 1px solid var(--primary-color, #00ff41);
+                      margin: 10px;
+                      padding-bottom: 10px;
+                  }
+                  
+                  .sidebar-title {
+                      font-family: 'Orbitron', monospace;
+                      font-weight: 700;
+                      font-size: 14px;
+                      text-transform: uppercase;
+                      letter-spacing: 1px;
+                      margin-bottom: 10px;
+                      color: var(--primary-color, #00ff41);
+                      text-shadow: 0 0 5px var(--primary-color, #00ff41);
+                  }
+                  
+                  .file-browser {
+                      flex-grow: 1;
+                      max-height: 300px;
+                      overflow-y: auto;
+                      background: rgba(0, 20, 0, 0.3);
+                      border: 1px solid var(--primary-color, #00ff41);
+                      border-radius: 5px;
+                      padding: 10px;
+                  }
+                  
+                  .file-item {
+                      padding: 5px;
+                      cursor: pointer;
+                      border-radius: 3px;
+                      transition: all 0.2s;
+                      font-size: 12px;
+                  }
+                  
+                  .file-item:hover {
+                      background: rgba(0, 255, 65, 0.2);
+                      box-shadow: 0 0 5px rgba(0, 255, 65, 0.3);
+                  }
+                  
+                  .drop-zone {
+                      border: 2px dashed var(--primary-color, #00ff41);
+                      border-radius: 5px;
+                      padding: 20px;
+                      text-align: center;
+                      background: rgba(0, 20, 0, 0.2);
+                      transition: all 0.3s;
+                      cursor: pointer;
+                  }
+                  
+                  .drop-zone:hover, .drop-zone.dragover {
+                      background: rgba(0, 255, 65, 0.1);
+                      box-shadow: 0 0 15px rgba(0, 255, 65, 0.3);
+                  }
+                  
+                  .config-panel {
+                      background: rgba(0, 20, 0, 0.3);
+                      border: 1px solid var(--primary-color, #00ff41);
+                      border-radius: 5px;
+                      padding: 10px;
+                  }
+                  
+                  .config-row {
+                      display: flex;
+                      align-items: center;
+                      margin: 8px 0;
+                      gap: 10px;
+                  }
+                  
+                  .config-label {
+                      min-width: 80px;
+                      font-size: 11px;
+                      text-transform: uppercase;
+                      letter-spacing: 0.5px;
+                  }
+                  
+                  .config-input, .config-select {
+                      flex-grow: 1;
+                      background: rgba(0, 0, 0, 0.8);
+                      color: var(--primary-color, #00ff41);
+                      border: 1px solid var(--primary-color, #00ff41);
+                      padding: 5px;
+                      border-radius: 3px;
+                      font-family: 'Fira Code', monospace;
+                      font-size: 11px;
+                  }
+                  
+                  .config-input:focus, .config-select:focus {
+                      outline: none;
+                      box-shadow: 0 0 5px var(--primary-color, #00ff41);
+                  }
+                  
+                  .status-indicator {
+                      position: absolute;
+                      top: 10px;
+                      right: 10px;
+                      padding: 5px 10px;
+                      border-radius: 15px;
+                      font-size: 11px;
+                      font-family: 'Orbitron', monospace;
+                      font-weight: 700;
+                      text-transform: uppercase;
+                      letter-spacing: 1px;
+                      z-index: 20;
+                  }
+                  
+                  .status-remote-on {
+                      background: #ff4444;
+                      color: white;
+                      box-shadow: 0 0 10px #ff4444;
+                      animation: pulse 2s infinite;
+                  }
+                  
+                  .status-remote-off {
+                      background: rgba(68, 68, 68, 0.8);
+                      color: #ccc;
+                      border: 1px solid #666;
+                  }
+                  
+                  @keyframes pulse {
+                      0%, 100% { opacity: 1; }
+                      50% { opacity: 0.7; }
+                  }
+                  
+                  /* Color themes */
+                  .theme-matrix { --primary-color: #00ff41; }
+                  .theme-cyber { --primary-color: #00ffff; }
+                  .theme-neon { --primary-color: #ff0080; }
+                  .theme-orange { --primary-color: #ff8800; }
+                  .theme-purple { --primary-color: #8800ff; }
+                  .theme-red { --primary-color: #ff4444; }
+                  .theme-blue { --primary-color: #4488ff; }
+                  
+                  .fullscreen-btn {
+                      position: absolute;
+                      top: 10px;
+                      right: 10px;
+                      z-index: 15;
+                  }
+                  
+                  /* Scrollbar styling */
+                  ::-webkit-scrollbar {
+                      width: 6px;
+                  }
+                  
+                  ::-webkit-scrollbar-track {
+                      background: rgba(0, 0, 0, 0.5);
+                  }
+                  
+                  ::-webkit-scrollbar-thumb {
+                      background: var(--primary-color, #00ff41);
+                      border-radius: 3px;
+                  }
+                  
+                  ::-webkit-scrollbar-thumb:hover {
+                      background: rgba(0, 255, 65, 0.8);
+                  }
+              </style>
+          </head>
+          <body>
+              <div class="cyber-container theme-matrix" id="cyberContainer">
+                  <div class="header">
+                      <div class="controls">
+                          <button class="cyber-btn" onclick="cycleTheme()">🎨 Theme</button>
+                          <button class="cyber-btn" onclick="changeTitle()">📝 Title</button>
+                      </div>
+                      <div class="session-title" id="sessionTitle">AI Hacker Terminal</div>
+                      <div class="controls">
+                          <button class="cyber-btn" id="remoteBtn" onclick="toggleRemote()">📡 Remote</button>
+                          <button class="cyber-btn" onclick="showHelp()">❓ Help</button>
+                      </div>
+                  </div>
+                  
+                  <div class="status-indicator status-remote-off" id="statusIndicator">Remote: OFF</div>
+                  
+                  <div class="main-content">
+                      <div class="terminal-section" id="terminalSection">
+                          <button class="cyber-btn fullscreen-btn" onclick="toggleFullscreen()">⛶ Full</button>
+                          <iframe class="terminal-frame" src="http://10.0.10.115:7681" id="terminalFrame"></iframe>
+                      </div>
+                      
+                      <div class="sidebar" id="sidebar">
+                          <div class="sidebar-section">
+                              <div class="sidebar-title">📁 File Browser</div>
+                              <div class="file-browser" id="fileBrowser">
+                                  <div class="file-item">📄 kubeconfig.yaml</div>
+                                  <div class="file-item">📄 scripts/</div>
+                                  <div class="file-item">📄 logs/</div>
+                                  <div class="file-item">📄 temp/</div>
+                              </div>
+                          </div>
+                          
+                          <div class="sidebar-section">
+                              <div class="sidebar-title">📤 File Upload</div>
+                              <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+                                  <div>🎯 DROP FILES HERE</div>
+                                  <div style="font-size: 10px; margin-top: 5px;">or click to browse</div>
+                              </div>
+                              <input type="file" id="fileInput" style="display: none" multiple>
+                          </div>
+                          
+                          <div class="sidebar-section">
+                              <div class="sidebar-title">⚙️ Config</div>
+                              <div class="config-panel">
+                                  <div class="config-row">
+                                      <span class="config-label">NTFY:</span>
+                                      <input type="text" class="config-input" id="ntfyTopic" value="ai_communication" placeholder="Topic">
+                                  </div>
+                                  <div class="config-row">
+                                      <span class="config-label">Mode:</span>
+                                      <select class="config-select" id="modeSelect">
+                                          <option value="hacker">🚀 Hacker</option>
+                                          <option value="dev">💻 Developer</option>
+                                          <option value="ops">⚙️ DevOps</option>
+                                      </select>
+                                  </div>
+                                  <div class="config-row">
+                                      <button class="cyber-btn" onclick="applyKubeconfig()" style="width: 100%; font-size: 10px;">🔧 Set Kubectl</button>
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+              
+              <script>
+                  let remoteMode = false;
+                  let currentTheme = 'theme-matrix';
+                  let isFullscreen = false;
+                  const themes = ['theme-matrix', 'theme-cyber', 'theme-neon', 'theme-orange', 'theme-purple', 'theme-red', 'theme-blue'];
+                  
+                  function loadConfig() {
+                      const title = localStorage.getItem('sessionTitle') || 'AI Hacker Terminal';
+                      const theme = localStorage.getItem('sessionTheme') || 'theme-matrix';
+                      document.getElementById('sessionTitle').textContent = title;
+                      document.getElementById('cyberContainer').className = 'cyber-container ' + theme;
+                      currentTheme = theme;
+                  }
+                  
+                  function cycleTheme() {
+                      const currentIndex = themes.indexOf(currentTheme);
+                      const nextTheme = themes[(currentIndex + 1) % themes.length];
+                      currentTheme = nextTheme;
+                      document.getElementById('cyberContainer').className = 'cyber-container ' + nextTheme;
+                      localStorage.setItem('sessionTheme', nextTheme);
+                  }
+                  
+                  function changeTitle() {
+                      const newTitle = prompt('🚀 Enter session title:', document.getElementById('sessionTitle').textContent);
+                      if (newTitle) {
+                          document.getElementById('sessionTitle').textContent = newTitle;
+                          localStorage.setItem('sessionTitle', newTitle);
+                      }
+                  }
+                  
+                  function toggleRemote() {
+                      remoteMode = !remoteMode;
+                      const status = document.getElementById('statusIndicator');
+                      const btn = document.getElementById('remoteBtn');
+                      
+                      if (remoteMode) {
+                          status.textContent = 'Remote: ACTIVE';
+                          status.className = 'status-indicator status-remote-on';
+                          btn.classList.add('active');
+                          // Send notification
+                          fetch('https://ntfy.wiredquill.com/' + document.getElementById('ntfyTopic').value, {
+                              method: 'POST',
+                              headers: { 'Title': '🚀 AI Terminal Remote Mode' },
+                              body: '🟢 Remote mode ENABLED - AI session active'
+                          });
+                      } else {
+                          status.textContent = 'Remote: OFF';
+                          status.className = 'status-indicator status-remote-off';
+                          btn.classList.remove('active');
+                          // Send notification
+                          fetch('https://ntfy.wiredquill.com/' + document.getElementById('ntfyTopic').value, {
+                              method: 'POST',
+                              headers: { 'Title': '🚀 AI Terminal Remote Mode' },
+                              body: '🔴 Remote mode DISABLED'
+                          });
+                      }
+                  }
+                  
+                  function toggleFullscreen() {
+                      const terminal = document.getElementById('terminalSection');
+                      const sidebar = document.getElementById('sidebar');
+                      
+                      isFullscreen = !isFullscreen;
+                      
+                      if (isFullscreen) {
+                          terminal.classList.add('fullscreen');
+                          sidebar.style.display = 'none';
+                      } else {
+                          terminal.classList.remove('fullscreen');
+                          sidebar.style.display = 'flex';
+                      }
+                  }
+                  
+                  function applyKubeconfig() {
+                      alert('🔧 Kubeconfig Setup:\\n\\n1. In terminal:\\n   source /tmp/kubeconfig-helper.sh\\n\\n2. Paste config:\\n   kcset -\\n   (paste your YAML)\\n\\n3. Verify:\\n   kubectl get nodes');
+                  }
+                  
+                  function showHelp() {
+                      alert('🚀 AI Hacker Terminal\\n\\nCommands:\\n• Theme: Cycle color themes\\n• Remote: Toggle AI notifications\\n• Full: Terminal fullscreen\\n• Drop files: Drag to upload\\n\\nTerminal:\\n• source /tmp/kubeconfig-helper.sh\\n• remote-toggle (if available)\\n• All kubectl, helm, k9s tools ready');
+                  }
+                  
+                  // File upload handling
+                  document.getElementById('fileInput').addEventListener('change', function(e) {
+                      const files = e.target.files;
+                      for (let file of files) {
+                          console.log('📁 File selected:', file.name);
+                          // Here you would implement actual file upload
+                      }
+                  });
+                  
+                  // Drag and drop
+                  const dropZone = document.getElementById('dropZone');
+                  
+                  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                      dropZone.addEventListener(eventName, preventDefaults, false);
+                  });
+                  
+                  function preventDefaults(e) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                  }
+                  
+                  ['dragenter', 'dragover'].forEach(eventName => {
+                      dropZone.addEventListener(eventName, highlight, false);
+                  });
+                  
+                  ['dragleave', 'drop'].forEach(eventName => {
+                      dropZone.addEventListener(eventName, unhighlight, false);
+                  });
+                  
+                  function highlight(e) {
+                      dropZone.classList.add('dragover');
+                  }
+                  
+                  function unhighlight(e) {
+                      dropZone.classList.remove('dragover');
+                  }
+                  
+                  dropZone.addEventListener('drop', handleDrop, false);
+                  
+                  function handleDrop(e) {
+                      const dt = e.dataTransfer;
+                      const files = dt.files;
+                      
+                      for (let file of files) {
+                          console.log('🎯 File dropped:', file.name);
+                          // Here you would implement actual file upload
+                      }
+                  }
+                  
+                  // Load configuration on startup
+                  loadConfig();
+              </script>
+          </body>
+          </html>
+          HTMLEOF
+          
+          # Start simple web server using Python
+          python3 -m http.server 8080 &
+          
+          # Wait for services to start
+          sleep 3
+          echo "🚀 Futuristic Terminal UI ready at port 8080"
+          echo "🔧 Terminal access at port 7681"
+          
+          # Keep container running
+          wait
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        env:
+        - name: TERM
+          value: "xterm-256color"
+        - name: COLORTERM
+          value: "truecolor"
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: wiredquill-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/WiredQuill
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-service
+  namespace: k8s-tmux
+spec:
+  selector:
+    app: k8s-tmux
+  ports:
+  - name: web-ui
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+  - name: terminal
+    protocol: TCP
+    port: 7681
+    targetPort: 7681
+  type: LoadBalancer

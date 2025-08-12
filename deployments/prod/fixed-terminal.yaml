@@ -1,0 +1,591 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-tmux
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux
+  namespace: k8s-tmux
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux
+    spec:
+      containers:
+      - name: k8s-tmux
+        image: ghcr.io/wiredquill/k8s-tmux:latest
+        ports:
+        - containerPort: 7681
+        - containerPort: 8080
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - |
+          # Create uploads directory
+          mkdir -p /mnt/k8s-tmux/uploads
+          chmod 755 /mnt/k8s-tmux/uploads
+          
+          # Set color environment variables
+          export TERM=xterm-256color
+          export COLORTERM=truecolor  
+          export FORCE_COLOR=1
+          export CLICOLOR_FORCE=1
+          
+          # Start shared tmux session with color support
+          cd /mnt/k8s-tmux
+          tmux new-session -d -s main -c /mnt/k8s-tmux 'export TERM=xterm-256color; export COLORTERM=truecolor; export FORCE_COLOR=1; export CLICOLOR_FORCE=1; alias ls="ls --color=auto"; alias ll="ls -la --color=auto"; export PS1="\[\e[1;32m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]# "; bash'
+          
+          # Start ttyd with proper color support  
+          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin --terminal-type xterm-256color tmux attach-session -t main &
+          
+          # Create Python web server with enhanced functionality
+          cat > /tmp/server.py << 'PYEOF'
+#!/usr/bin/env python3
+import http.server
+import socketserver
+import urllib.parse
+import json
+import os
+import cgi
+import shutil
+import subprocess
+from pathlib import Path
+
+class FileHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/':
+            self.send_cyber_ui()
+        elif self.path.startswith('/api/files'):
+            self.send_file_list()
+        elif self.path.startswith('/api/download/'):
+            filename = self.path.split('/')[-1]
+            self.download_file(filename)
+        else:
+            super().do_GET()
+    
+    def do_POST(self):
+        if self.path == '/api/upload':
+            self.handle_upload()
+        elif self.path == '/api/send-command':
+            self.handle_send_command()
+        elif self.path == '/api/test-ntfy':
+            self.handle_test_ntfy()
+        else:
+            self.send_error(404)
+    
+    def send_cyber_ui(self):
+        html = '''<!DOCTYPE html>
+<html>
+<head>
+    <title>🚀 AI Hacker Terminal</title>
+    <meta charset="utf-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            background: radial-gradient(ellipse at center, #0a0a0a 0%, #000000 100%);
+            font-family: 'Courier New', monospace; 
+            color: #00ff41;
+            overflow: hidden;
+            height: 100vh;
+        }
+        .cyber-container {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            border: 2px solid #00ff41;
+            border-radius: 10px;
+            margin: 5px;
+            background: rgba(0, 0, 0, 0.9);
+            box-shadow: 0 0 30px #00ff41;
+        }
+        .header {
+            background: linear-gradient(90deg, rgba(0, 255, 65, 0.8) 0%, rgba(0, 255, 65, 0.3) 50%, rgba(0, 255, 65, 0.8) 100%);
+            color: #000;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 700;
+            border-bottom: 1px solid #00ff41;
+        }
+        .session-title {
+            font-size: 24px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            flex-grow: 1;
+            text-align: center;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .cyber-btn {
+            background: rgba(0, 0, 0, 0.8);
+            color: #00ff41;
+            border: 1px solid #00ff41;
+            padding: 8px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s ease;
+        }
+        .cyber-btn:hover {
+            background: #00ff41;
+            color: #000;
+            box-shadow: 0 0 20px #00ff41;
+        }
+        .main-content {
+            flex-grow: 1;
+            display: flex;
+        }
+        .terminal-section {
+            width: 66.66%;
+            position: relative;
+            border-right: 1px solid #00ff41;
+        }
+        .terminal-frame {
+            width: 100%;
+            height: 100%;
+            border: none;
+            background: #000;
+        }
+        .sidebar {
+            width: 33.33%;
+            display: flex;
+            flex-direction: column;
+            background: rgba(0, 0, 0, 0.5);
+            overflow-y: auto;
+        }
+        .sidebar-section {
+            border-bottom: 1px solid #00ff41;
+            margin: 10px;
+            padding-bottom: 10px;
+        }
+        .sidebar-title {
+            font-weight: 700;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+            color: #00ff41;
+        }
+        .file-browser {
+            max-height: 200px;
+            overflow-y: auto;
+            background: rgba(0, 20, 0, 0.3);
+            border: 1px solid #00ff41;
+            border-radius: 5px;
+            padding: 5px;
+        }
+        .file-item {
+            padding: 3px 5px;
+            cursor: pointer;
+            border-radius: 3px;
+            transition: all 0.2s;
+            font-size: 11px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .file-item:hover {
+            background: rgba(0, 255, 65, 0.2);
+            box-shadow: 0 0 5px rgba(0, 255, 65, 0.3);
+        }
+        .config-input {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            color: #00ff41;
+            border: 1px solid #00ff41;
+            padding: 5px;
+            border-radius: 3px;
+            font-size: 11px;
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="cyber-container">
+        <div class="header">
+            <div class="controls">
+                <button class="cyber-btn" onclick="testRemote()">🧪 Test</button>
+            </div>
+            <div class="session-title">AI Hacker Terminal</div>
+            <div class="controls">
+                <button class="cyber-btn" onclick="refreshFiles()">🔄 Refresh</button>
+            </div>
+        </div>
+        
+        <div class="main-content">
+            <div class="terminal-section">
+                <iframe class="terminal-frame" id="terminalFrame"></iframe>
+            </div>
+            
+            <div class="sidebar">
+                <div class="sidebar-section">
+                    <div class="sidebar-title">📁 Files (/mnt)</div>
+                    <div class="file-browser" id="fileBrowser">
+                        <div style="text-align: center; padding: 20px; opacity: 0.7;">Loading...</div>
+                    </div>
+                </div>
+                
+                <div class="sidebar-section">
+                    <div class="sidebar-title">⏰ Timed Messages</div>
+                    <input type="text" class="config-input" id="timedMessage" placeholder="Enter command" value="ls -la --color">
+                    <input type="number" class="config-input" id="messageDelay" value="5" min="1" placeholder="Delay (seconds)">
+                    <button class="cyber-btn" onclick="scheduleMessage()" style="width: 100%;">⏰ Schedule</button>
+                    <div id="scheduleStatus" style="font-size: 10px; margin-top: 5px;"></div>
+                </div>
+                
+                <div class="sidebar-section">
+                    <div class="sidebar-title">⚙️ Config</div>
+                    <input type="text" class="config-input" id="ntfyTopic" value="ai_comms" placeholder="NTFY Topic">
+                    <button class="cyber-btn" onclick="testRemote()" style="width: 100%;">🧪 Test NTFY</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let currentPath = '';
+        let scheduledTimeout = null;
+        
+        // Set terminal iframe source
+        document.getElementById('terminalFrame').src = `http://${window.location.hostname}:7681`;
+        
+        function loadFiles(path = '') {
+            const url = path ? `/api/files?path=${encodeURIComponent(path)}` : '/api/files';
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    const browser = document.getElementById('fileBrowser');
+                    currentPath = data.current_path || '';
+                    
+                    if (data.files && data.files.length === 0) {
+                        browser.innerHTML = '<div style="text-align: center; padding: 10px;">No files found</div>';
+                        return;
+                    }
+                    
+                    const files = data.files || data;
+                    browser.innerHTML = files.map(file => `
+                        <div class="file-item" onclick="handleFileClick('${file.path || file.name}', '${file.type}', '${file.name}')">
+                            <span>${file.type === 'dir' ? '📁' : '📄'} ${file.name}</span>
+                        </div>
+                    `).join('');
+                })
+                .catch(error => {
+                    document.getElementById('fileBrowser').innerHTML = '<div style="color: red; padding: 10px;">Error loading files</div>';
+                });
+        }
+        
+        function handleFileClick(path, type, name) {
+            if (type === 'dir') {
+                loadFiles(path);
+            }
+        }
+        
+        function refreshFiles() {
+            loadFiles(currentPath);
+        }
+        
+        function scheduleMessage() {
+            const message = document.getElementById('timedMessage').value.trim();
+            const delay = parseInt(document.getElementById('messageDelay').value);
+            
+            if (!message) {
+                alert('Please enter a message or command');
+                return;
+            }
+            
+            const status = document.getElementById('scheduleStatus');
+            status.textContent = `⏰ Sending in ${delay}s: "${message}"`;
+            
+            scheduledTimeout = setTimeout(() => {
+                sendTimedMessage(message);
+                status.textContent = '✅ Message sent!';
+                setTimeout(() => status.textContent = '', 3000);
+            }, delay * 1000);
+        }
+        
+        function sendTimedMessage(message) {
+            fetch('/api/send-command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command: message })
+            })
+            .then(response => response.json())
+            .then(result => {
+                console.log('Command sent:', message);
+            })
+            .catch(error => {
+                console.error('Failed to send command:', error);
+            });
+        }
+        
+        function testRemote() {
+            const topic = document.getElementById('ntfyTopic').value;
+            fetch('/api/test-ntfy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    topic: topic,
+                    message: '🧪 Test notification from AI Terminal!'
+                })
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    alert('🧪 Test notification sent successfully!');
+                } else {
+                    alert('❌ Test failed: ' + (result.error || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                alert('❌ Network error: ' + error.message);
+            });
+        }
+        
+        // Load files on startup
+        loadFiles();
+    </script>
+</body>
+</html>'''
+        
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        self.wfile.write(html.encode())
+    
+    def send_file_list(self):
+        try:
+            path_param = self.path.split('?path=')[-1] if '?path=' in self.path else ''
+            current_path = Path('/mnt') / path_param if path_param else Path('/mnt')
+            
+            files = []
+            if current_path.exists() and current_path.is_dir():
+                # Add parent directory link if not at root
+                if str(current_path) != '/mnt':
+                    parent = current_path.parent.relative_to(Path('/mnt'))
+                    files.append({
+                        'name': '..',
+                        'type': 'dir',
+                        'path': str(parent) if str(parent) != '.' else '',
+                        'size': 0
+                    })
+                
+                for item in sorted(current_path.iterdir()):
+                    rel_path = item.relative_to(Path('/mnt'))
+                    files.append({
+                        'name': item.name,
+                        'type': 'dir' if item.is_dir() else 'file',
+                        'path': str(rel_path),
+                        'size': item.stat().st_size if item.is_file() else 0
+                    })
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'files': files,
+                'current_path': str(current_path.relative_to(Path('/mnt'))) if str(current_path) != '/mnt' else ''
+            }).encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+    
+    def handle_upload(self):
+        try:
+            content_type = self.headers['content-type']
+            if not content_type.startswith('multipart/form-data'):
+                self.send_error(400, 'Expected multipart/form-data')
+                return
+            
+            form = cgi.FieldStorage(
+                fp=self.rfile,
+                headers=self.headers,
+                environ={'REQUEST_METHOD': 'POST'}
+            )
+            
+            if 'file' not in form:
+                self.send_error(400, 'No file uploaded')
+                return
+            
+            file_item = form['file']
+            if not file_item.filename:
+                self.send_error(400, 'No filename')
+                return
+            
+            # Save file to uploads directory
+            upload_path = Path('/mnt/k8s-tmux/uploads') / file_item.filename
+            upload_path.parent.mkdir(exist_ok=True)
+            
+            with open(upload_path, 'wb') as f:
+                f.write(file_item.file.read())
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'success': True,
+                'filename': file_item.filename,
+                'path': str(upload_path)
+            }).encode())
+            
+        except Exception as e:
+            self.send_error(500, str(e))
+    
+    def download_file(self, filename):
+        try:
+            file_path = Path('/mnt/k8s-tmux') / filename
+            if not file_path.exists() or not file_path.is_file():
+                self.send_error(404, 'File not found')
+                return
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/octet-stream')
+            self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+            self.end_headers()
+            
+            with open(file_path, 'rb') as f:
+                shutil.copyfileobj(f, self.wfile)
+                
+        except Exception as e:
+            self.send_error(500, str(e))
+    
+    def handle_send_command(self):
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            command = data.get('command', '').strip()
+            if not command:
+                self.send_error(400, 'No command provided')
+                return
+            
+            # Send command to tmux session
+            result = subprocess.run([
+                'tmux', 'send-keys', '-t', 'main', command, 'Enter'
+            ], capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'success': True,
+                    'command': command,
+                    'message': 'Command sent to terminal'
+                }).encode())
+            else:
+                self.send_error(500, f'Failed to send command: {result.stderr}')
+                
+        except Exception as e:
+            self.send_error(500, str(e))
+    
+    def handle_test_ntfy(self):
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            topic = data.get('topic', 'ai_communication')
+            message = data.get('message', 'Test notification from AI Terminal')
+            
+            # Test ntfy notification
+            result = subprocess.run([
+                'curl', '-s', '-X', 'POST',
+                f'https://ntfy.wiredquill.com/{topic}',
+                '-H', 'Title: 🧪 AI Terminal Test',
+                '-d', message
+            ], capture_output=True, text=True)
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'success': result.returncode == 0,
+                'output': result.stdout,
+                'error': result.stderr if result.returncode != 0 else None
+            }).encode())
+            
+        except Exception as e:
+            self.send_error(500, str(e))
+
+if __name__ == '__main__':
+    port = 8080
+    with socketserver.TCPServer(("", port), FileHandler) as httpd:
+        print(f"🚀 AI Terminal server running on port {port}")
+        httpd.serve_forever()
+PYEOF
+          
+          chmod +x /tmp/server.py
+          python3 /tmp/server.py &
+          
+          # Wait for services to start
+          sleep 3
+          echo "🚀 AI Terminal ready!"
+          echo "🎯 Web UI: port 8080"
+          echo "🔧 Terminal: port 7681" 
+          echo "🌈 Colors: ENABLED"
+          
+          # Keep container running
+          wait
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        env:
+        - name: TERM
+          value: "xterm-256color"
+        - name: COLORTERM
+          value: "truecolor"
+        - name: FORCE_COLOR
+          value: "1"
+        - name: CLICOLOR_FORCE
+          value: "1"
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: wiredquill-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/WiredQuill
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-service
+  namespace: k8s-tmux
+spec:
+  selector:
+    app: k8s-tmux
+  ports:
+  - name: web-ui
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+  - name: terminal
+    protocol: TCP
+    port: 7681
+    targetPort: 7681
+  type: LoadBalancer

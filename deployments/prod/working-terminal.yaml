@@ -1,0 +1,2207 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-tmux
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux
+  namespace: k8s-tmux
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux
+    spec:
+      containers:
+      - name: k8s-tmux
+        image: ghcr.io/wiredquill/k8s-tmux:latest
+        ports:
+        - containerPort: 7681
+        - containerPort: 8080
+        command: ["/bin/bash"]
+        args: 
+        - "-c"
+        - |
+          mkdir -p /mnt/k8s-tmux/uploads
+          chmod 755 /mnt/k8s-tmux/uploads
+          
+          # Install MQTT client tools
+          echo "Installing MQTT client tools..."
+          zypper refresh && zypper install -y mosquitto-clients || echo "MQTT client install failed, using fallback"
+          
+          export TERM=xterm-256color
+          export COLORTERM=truecolor
+          export FORCE_COLOR=1
+          export CLICOLOR_FORCE=1
+          
+          cd /mnt/k8s-tmux
+          tmux new-session -d -s main -c /mnt/k8s-tmux bash
+          tmux send-keys -t main 'export TERM=xterm-256color' Enter
+          tmux send-keys -t main 'export COLORTERM=truecolor' Enter
+          tmux send-keys -t main 'export FORCE_COLOR=1' Enter
+          tmux send-keys -t main 'export CLICOLOR_FORCE=1' Enter
+          tmux send-keys -t main 'alias ls="ls --color=auto"' Enter
+          tmux send-keys -t main 'alias ll="ls -la --color=auto"' Enter
+          tmux send-keys -t main 'clear' Enter
+          
+          # Verify tmux session exists
+          echo "Checking tmux session..."
+          tmux list-sessions
+          
+          # Start ttyd in background and wait for it to be ready
+          echo "Starting ttyd..."
+          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color tmux attach-session -t main > /tmp/ttyd.log 2>&1 &
+          TTYD_PID=$!
+          
+          # Wait for ttyd to start
+          sleep 3
+          if ps -p $TTYD_PID > /dev/null; then
+            echo "ttyd started successfully (PID: $TTYD_PID)"
+          else
+            echo "ERROR: ttyd failed to start"
+            cat /tmp/ttyd.log
+          fi
+          
+          cat > /tmp/server.py << 'EOF'
+          #!/usr/bin/env python3
+          import http.server
+          import socketserver
+          import urllib.parse
+          import json
+          import os
+          import cgi
+          import shutil
+          import subprocess
+          from pathlib import Path
+          import threading
+          import time
+          
+          # MQTT Client for communication
+          class MQTTClient:
+              def __init__(self, broker_host="10.0.1.101", broker_port=1883):
+                  self.broker_host = broker_host
+                  self.broker_port = broker_port
+                  self.client = None
+                  self.connected = False
+                  
+              def connect(self):
+                  try:
+                      # Simple MQTT connection test using socket
+                      import socket
+                      sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                      sock.settimeout(5)
+                      sock.connect((self.broker_host, self.broker_port))
+                      
+                      # Proper MQTT CONNECT packet with client ID
+                      client_id = f"ai_terminal_{int(time.time())}"
+                      client_id_bytes = client_id.encode('utf-8')
+                      
+                      connect_packet = bytearray()
+                      connect_packet.append(0x10)  # CONNECT packet type
+                      
+                      # Variable header + payload length calculation
+                      variable_header = bytearray()
+                      variable_header.extend([0x00, 0x04])  # Protocol name length
+                      variable_header.extend(b'MQTT')       # Protocol name
+                      variable_header.append(0x04)         # Protocol level
+                      variable_header.append(0x02)         # Connect flags (clean session)  
+                      variable_header.extend([0x00, 0x3c]) # Keep alive (60 seconds)
+                      
+                      # Payload (client ID)
+                      payload = bytearray()
+                      payload.extend(len(client_id_bytes).to_bytes(2, 'big'))
+                      payload.extend(client_id_bytes)
+                      
+                      # Remaining length
+                      remaining_length = len(variable_header) + len(payload)
+                      connect_packet.append(remaining_length)
+                      connect_packet.extend(variable_header)
+                      connect_packet.extend(payload)
+                      
+                      sock.send(connect_packet)
+                      response = sock.recv(4)
+                      
+                      # Check CONNACK response
+                      if len(response) >= 4 and response[0] == 0x20 and response[3] == 0x00:
+                          self.connected = True
+                          sock.close()
+                          return True
+                      else:
+                          self.connected = False
+                          sock.close()
+                          return False
+                          
+                  except Exception as e:
+                      self.connected = False
+                      return False
+                      
+              def publish(self, topic, message):
+                  try:
+                      # Try mosquitto_pub first
+                      result = subprocess.run([
+                          'mosquitto_pub', '-h', self.broker_host, '-p', str(self.broker_port),
+                          '-t', topic, '-m', message
+                      ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+                      if result.returncode == 0:
+                          return True
+                  except:
+                      pass
+                      
+                  try:
+                      # Proper MQTT publish using socket
+                      import socket
+                      sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                      sock.settimeout(5)
+                      sock.connect((self.broker_host, self.broker_port))
+                      
+                      # MQTT CONNECT first
+                      client_id = f"ai_terminal_pub_{int(time.time())}"
+                      client_id_bytes = client_id.encode('utf-8')
+                      
+                      connect_packet = bytearray()
+                      connect_packet.append(0x10)  # CONNECT
+                      
+                      variable_header = bytearray()
+                      variable_header.extend([0x00, 0x04])  # Protocol name length
+                      variable_header.extend(b'MQTT')       # Protocol name  
+                      variable_header.append(0x04)         # Protocol level
+                      variable_header.append(0x02)         # Clean session
+                      variable_header.extend([0x00, 0x3c]) # Keep alive
+                      
+                      payload = bytearray()
+                      payload.extend(len(client_id_bytes).to_bytes(2, 'big'))
+                      payload.extend(client_id_bytes)
+                      
+                      remaining_length = len(variable_header) + len(payload)
+                      connect_packet.append(remaining_length)
+                      connect_packet.extend(variable_header)
+                      connect_packet.extend(payload)
+                      
+                      sock.send(connect_packet)
+                      response = sock.recv(4)
+                      
+                      # Check CONNACK
+                      if len(response) >= 4 and response[0] == 0x20 and response[3] == 0x00:
+                          # Now send PUBLISH
+                          topic_bytes = topic.encode('utf-8')
+                          message_bytes = message.encode('utf-8')
+                          
+                          publish_packet = bytearray()
+                          publish_packet.append(0x30)  # PUBLISH
+                          remaining_length = 2 + len(topic_bytes) + len(message_bytes)
+                          publish_packet.append(remaining_length)
+                          publish_packet.extend(len(topic_bytes).to_bytes(2, 'big'))
+                          publish_packet.extend(topic_bytes)
+                          publish_packet.extend(message_bytes)
+                          
+                          sock.send(publish_packet)
+                          sock.close()
+                          return True
+                      
+                      sock.close()
+                      return False
+                  except:
+                      return False
+          
+          # Global MQTT client
+          mqtt_client = MQTTClient()
+          
+          class FileHandler(http.server.SimpleHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == '/':
+                      self.send_ui()
+                  elif self.path == '/mobile':
+                      self.send_mobile_ui()
+                  elif self.path.startswith('/api/files'):
+                      self.send_file_list()
+                  elif self.path == '/api/terminal-output':
+                      self.get_terminal_output()
+                  elif self.path == '/terminal' or self.path.startswith('/terminal/'):
+                      self.proxy_to_ttyd()
+                  else:
+                      super().do_GET()
+              
+              def do_POST(self):
+                  if self.path == '/api/send-command':
+                      self.handle_send_command()
+                  elif self.path == '/api/test-mqtt':
+                      self.handle_test_mqtt()
+                  elif self.path == '/api/mqtt-status':
+                      self.handle_mqtt_status()
+                  elif self.path == '/api/trigger-qa':
+                      self.handle_trigger_qa()
+                  else:
+                      self.send_error(404)
+              
+              def send_ui(self):
+                  html = '''<!DOCTYPE html>
+          <html>
+          <head>
+              <title>AI Terminal</title>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <style>
+                  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+                  
+                  * { 
+                      margin: 0; 
+                      padding: 0; 
+                      box-sizing: border-box; 
+                  }
+                  
+                  body { 
+                      background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+                      font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+                      color: #2d3748;
+                      height: 100vh;
+                      overflow: hidden;
+                  }
+                  
+                  .container {
+                      height: 100vh;
+                      display: flex;
+                      flex-direction: column;
+                      background: white;
+                      border-radius: 12px;
+                      margin: 8px;
+                      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+                      overflow: hidden;
+                  }
+                  
+                  .header {
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      color: white;
+                      padding: 16px 24px;
+                      display: flex;
+                      justify-content: space-between;
+                      align-items: center;
+                      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+                  }
+                  
+                  .header h1 {
+                      font-size: 20px;
+                      font-weight: 600;
+                      letter-spacing: -0.025em;
+                  }
+                  
+                  .main-content {
+                      flex-grow: 1;
+                      display: flex;
+                      background: #f8fafc;
+                  }
+                  
+                  .terminal-section {
+                      width: 66.66%;
+                      border-right: 1px solid #e2e8f0;
+                      background: white;
+                  }
+                  
+                  .terminal-frame {
+                      width: 100%;
+                      height: 100%;
+                      border: none;
+                      background: #1a202c;
+                      border-radius: 0 0 0 12px;
+                  }
+                  
+                  .sidebar {
+                      width: 33.33%;
+                      display: flex;
+                      flex-direction: column;
+                      background: #f8fafc;
+                      overflow-y: auto;
+                      padding: 20px;
+                      gap: 20px;
+                  }
+                  
+                  .section {
+                      background: white;
+                      border-radius: 8px;
+                      padding: 16px;
+                      box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+                      border: 1px solid #e2e8f0;
+                  }
+                  
+                  .section-title {
+                      font-weight: 600;
+                      margin-bottom: 12px;
+                      color: #2d3748;
+                      font-size: 14px;
+                      text-transform: uppercase;
+                      letter-spacing: 0.05em;
+                  }
+                  
+                  .file-browser {
+                      max-height: 200px;
+                      overflow-y: auto;
+                      background: #f7fafc;
+                      border: 1px solid #e2e8f0;
+                      border-radius: 6px;
+                      padding: 8px;
+                  }
+                  
+                  .file-item {
+                      padding: 8px 12px;
+                      cursor: pointer;
+                      border-radius: 4px;
+                      font-size: 13px;
+                      color: #4a5568;
+                      transition: all 0.15s ease;
+                      display: flex;
+                      align-items: center;
+                      gap: 8px;
+                  }
+                  
+                  .file-item:hover {
+                      background: #edf2f7;
+                      color: #2d3748;
+                      transform: translateX(2px);
+                  }
+                  
+                  .input {
+                      width: 100%;
+                      background: white;
+                      color: #2d3748;
+                      border: 1px solid #e2e8f0;
+                      border-radius: 6px;
+                      padding: 10px 12px;
+                      margin: 6px 0;
+                      font-size: 14px;
+                      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+                      font-family: 'Inter', sans-serif;
+                  }
+                  
+                  .input:focus {
+                      outline: none;
+                      border-color: #667eea;
+                      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+                  }
+                  
+                  .btn {
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      color: white;
+                      border: none;
+                      border-radius: 6px;
+                      padding: 10px 16px;
+                      cursor: pointer;
+                      margin: 4px 0;
+                      font-size: 13px;
+                      font-weight: 500;
+                      transition: all 0.15s ease;
+                      font-family: 'Inter', sans-serif;
+                      box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+                  }
+                  
+                  .btn:hover {
+                      transform: translateY(-1px);
+                      box-shadow: 0 4px 12px 0 rgba(102, 126, 234, 0.4);
+                  }
+                  
+                  .btn:active {
+                      transform: translateY(0);
+                  }
+                  
+                  .btn.secondary {
+                      background: #e2e8f0;
+                      color: #4a5568;
+                  }
+                  
+                  .btn.secondary:hover {
+                      background: #cbd5e0;
+                      box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.15);
+                  }
+                  
+                  .btn.remote-active {
+                      background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+                      animation: pulse-green 2s infinite;
+                  }
+                  
+                  .btn.remote-active:hover {
+                      box-shadow: 0 4px 12px 0 rgba(72, 187, 120, 0.4);
+                  }
+                  
+                  @keyframes pulse-green {
+                      0%, 100% { opacity: 1; }
+                      50% { opacity: 0.8; }
+                  }
+                  
+                  .remote-status-indicator {
+                      position: absolute;
+                      top: 16px;
+                      right: 16px;
+                      padding: 6px 12px;
+                      border-radius: 20px;
+                      font-size: 11px;
+                      font-weight: 600;
+                      text-transform: uppercase;
+                      letter-spacing: 0.5px;
+                      z-index: 10;
+                  }
+                  
+                  .remote-status-active {
+                      background: #c6f6d5;
+                      color: #22543d;
+                      border: 1px solid #9ae6b4;
+                  }
+                  
+                  .remote-status-inactive {
+                      background: #e2e8f0;
+                      color: #4a5568;
+                      border: 1px solid #cbd5e0;
+                  }
+                  
+                  .status-text {
+                      font-size: 12px;
+                      margin-top: 8px;
+                      padding: 8px 12px;
+                      border-radius: 4px;
+                      font-weight: 500;
+                  }
+                  
+                  .status-success {
+                      background: #c6f6d5;
+                      color: #22543d;
+                      border: 1px solid #9ae6b4;
+                  }
+                  
+                  .status-error {
+                      background: #fed7d7;
+                      color: #742a2a;
+                      border: 1px solid #fc8181;
+                  }
+                  
+                  .status-info {
+                      background: #bee3f8;
+                      color: #2a4365;
+                      border: 1px solid #90cdf4;
+                  }
+                  
+                  /* Scrollbar styling */
+                  ::-webkit-scrollbar {
+                      width: 6px;
+                  }
+                  
+                  ::-webkit-scrollbar-track {
+                      background: #f1f5f9;
+                  }
+                  
+                  ::-webkit-scrollbar-thumb {
+                      background: #cbd5e0;
+                      border-radius: 3px;
+                  }
+                  
+                  ::-webkit-scrollbar-thumb:hover {
+                      background: #a0aec0;
+                  }
+                  
+                  /* Q&A Modal Styles */
+                  .qa-modal {
+                      position: fixed;
+                      top: 0;
+                      left: 0;
+                      right: 0;
+                      bottom: 0;
+                      background: rgba(0, 0, 0, 0.8);
+                      display: none;
+                      z-index: 1000;
+                      align-items: center;
+                      justify-content: center;
+                      padding: 20px;
+                  }
+                  
+                  .qa-modal.show {
+                      display: flex;
+                  }
+                  
+                  .qa-content {
+                      background: white;
+                      border-radius: 12px;
+                      padding: 24px;
+                      max-width: 500px;
+                      width: 100%;
+                      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+                      animation: qa-slide-in 0.3s ease-out;
+                  }
+                  
+                  @keyframes qa-slide-in {
+                      from {
+                          opacity: 0;
+                          transform: translateY(-20px) scale(0.95);
+                      }
+                      to {
+                          opacity: 1;
+                          transform: translateY(0) scale(1);
+                      }
+                  }
+                  
+                  .qa-title {
+                      font-size: 18px;
+                      font-weight: 600;
+                      color: #2d3748;
+                      margin-bottom: 16px;
+                      text-align: center;
+                  }
+                  
+                  .qa-question {
+                      font-size: 14px;
+                      color: #4a5568;
+                      margin-bottom: 20px;
+                      line-height: 1.5;
+                      background: #f7fafc;
+                      padding: 16px;
+                      border-radius: 8px;
+                      border-left: 4px solid #667eea;
+                  }
+                  
+                  .qa-options {
+                      display: flex;
+                      flex-direction: column;
+                      gap: 8px;
+                      margin-bottom: 20px;
+                  }
+                  
+                  .qa-option {
+                      background: #f7fafc;
+                      border: 2px solid #e2e8f0;
+                      border-radius: 8px;
+                      padding: 12px 16px;
+                      cursor: pointer;
+                      transition: all 0.2s ease;
+                      font-size: 14px;
+                      color: #2d3748;
+                  }
+                  
+                  .qa-option:hover {
+                      border-color: #667eea;
+                      background: #edf2f7;
+                      transform: translateX(4px);
+                  }
+                  
+                  .qa-option.selected {
+                      border-color: #667eea;
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      color: white;
+                  }
+                  
+                  .qa-actions {
+                      display: flex;
+                      justify-content: flex-end;
+                      gap: 12px;
+                  }
+                  
+                  .qa-btn {
+                      padding: 8px 16px;
+                      border-radius: 6px;
+                      font-size: 13px;
+                      font-weight: 500;
+                      cursor: pointer;
+                      transition: all 0.2s ease;
+                      border: none;
+                  }
+                  
+                  .qa-btn-cancel {
+                      background: #e2e8f0;
+                      color: #4a5568;
+                  }
+                  
+                  .qa-btn-cancel:hover {
+                      background: #cbd5e0;
+                  }
+                  
+                  .qa-btn-send {
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      color: white;
+                  }
+                  
+                  .qa-btn-send:hover {
+                      transform: translateY(-1px);
+                      box-shadow: 0 4px 12px 0 rgba(102, 126, 234, 0.4);
+                  }
+                  
+                  .qa-btn-send:disabled {
+                      opacity: 0.5;
+                      cursor: not-allowed;
+                      transform: none;
+                      box-shadow: none;
+                  }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <div class="header">
+                      <h1>🤖 AI Terminal</h1>
+                      <div style="display: flex; gap: 12px; align-items: center;">
+                          <button class="btn" id="remoteBtn" onclick="toggleRemote()">📡 Remote Mode</button>
+                          <button class="btn" onclick="refreshFiles()">🔄 Refresh</button>
+                      </div>
+                  </div>
+                  
+                  <div class="main-content">
+                      <div class="terminal-section" style="position: relative;">
+                          <div class="remote-status-indicator remote-status-inactive" id="remoteStatusIndicator">Remote: OFF</div>
+                          <iframe class="terminal-frame" id="terminalFrame"></iframe>
+                      </div>
+                      
+                      <div class="sidebar">
+                          <div class="section">
+                              <div class="section-title">File Browser</div>
+                              <div class="file-browser" id="fileBrowser">
+                                  <div style="text-align: center; padding: 20px; color: #718096;">Loading files...</div>
+                              </div>
+                          </div>
+                          
+                          <div class="section">
+                              <div class="section-title">Scheduled Commands</div>
+                              <textarea class="input" id="timedMessage" placeholder="Enter commands (one per line or separated by ;)" rows="3" style="font-family: 'Inter', monospace; resize: vertical; min-height: 60px;">ls -la --color</textarea>
+                              
+                              <div style="display: flex; gap: 6px; margin: 6px 0;">
+                                  <select class="input" id="scheduleType" onchange="toggleScheduleType()" style="width: 80px; font-size: 12px;">
+                                      <option value="delay">Delay</option>
+                                      <option value="time">At Time</option>
+                                      <option value="date">Date/Time</option>
+                                  </select>
+                                  <input type="text" class="input" id="scheduleInput" value="5m" placeholder="5m, 2:30, 9pm" style="flex: 1; font-size: 12px;">
+                              </div>
+                              
+                              <div id="dateTimeInputs" style="display: none; gap: 6px; margin: 6px 0;">
+                                  <input type="date" class="input" id="scheduleDate" style="flex: 1; font-size: 12px;">
+                                  <input type="time" class="input" id="scheduleTime" style="flex: 1; font-size: 12px;">
+                              </div>
+                              
+                              <button class="btn" onclick="scheduleMessage()" style="width: 100%;">📅 Add to Queue</button>
+                              <div style="display: flex; gap: 4px; margin-top: 4px;">
+                                  <button class="btn secondary" onclick="cancelNext()" style="flex: 1; font-size: 11px;">❌ Cancel Next</button>
+                                  <button class="btn secondary" onclick="clearAllScheduled()" style="flex: 1; font-size: 11px;">🗑️ Clear All</button>
+                              </div>
+                              <div id="scheduleStatus"></div>
+                              
+                              <div id="scheduledQueue" style="max-height: 120px; overflow-y: auto; margin-top: 8px; padding: 6px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 11px;">
+                                  <div style="color: #718096; text-align: center;">No scheduled commands</div>
+                              </div>
+                          </div>
+                          
+                          <div class="section">
+                              <div class="section-title">MQTT Configuration</div>
+                              <label style="font-size: 12px; color: #718096; margin-bottom: 4px; display: block;">Broker Address</label>
+                              <input type="text" class="input" id="mqttBroker" value="10.0.1.101:1883" placeholder="MQTT Broker" readonly style="background: #f7fafc;">
+                              <label style="font-size: 12px; color: #718096; margin-bottom: 4px; display: block;">Topic</label>
+                              <input type="text" class="input" id="mqttTopic" value="ai_terminal/comms" placeholder="MQTT Topic">
+                              <button class="btn" onclick="testMQTT()" style="width: 100%;">Test Connection</button>
+                              <button class="btn secondary" onclick="checkMQTTStatus()" style="width: 100%;">Status Check</button>
+                              <button class="btn secondary" onclick="testQA()" style="width: 100%;">Test Q&A Modal</button>
+                              <div id="mqttStatus"></div>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+              
+              <!-- Q&A Modal -->
+              <div class="qa-modal" id="qaModal">
+                  <div class="qa-content">
+                      <div class="qa-title">Claude is asking a question</div>
+                      <div class="qa-question" id="qaQuestion">
+                          Loading question...
+                      </div>
+                      <div class="qa-options" id="qaOptions">
+                          <!-- Options will be populated dynamically -->
+                      </div>
+                      <div class="qa-actions">
+                          <button class="qa-btn qa-btn-cancel" onclick="closeQAModal()">Cancel</button>
+                          <button class="qa-btn qa-btn-send" id="qaSendBtn" onclick="sendQAResponse()" disabled>Send Response</button>
+                      </div>
+                  </div>
+              </div>
+              
+              <script>
+                  let currentPath = '';
+                  let scheduledTimeout = null;
+                  let countdownInterval = null;
+                  let remoteMode = false;
+                  let selectedOption = null;
+                  let scheduledCommands = [];
+                  let commandQueue = [];
+                  let nextCommandId = 1;
+                  
+                  document.getElementById('terminalFrame').src = '/terminal';
+                  
+                  function loadFiles(path = '') {
+                      const url = path ? `/api/files?path=${encodeURIComponent(path)}` : '/api/files';
+                      fetch(url)
+                          .then(response => response.json())
+                          .then(data => {
+                              const browser = document.getElementById('fileBrowser');
+                              currentPath = data.current_path || '';
+                              
+                              const files = data.files || data;
+                              browser.innerHTML = files.map(file => `
+                                  <div class="file-item" onclick="handleFileClick('${file.path || file.name}', '${file.type}', '${file.name}')">
+                                      ${file.type === 'dir' ? '📁' : '📄'} ${file.name}
+                                  </div>
+                              `).join('');
+                          })
+                          .catch(error => {
+                              document.getElementById('fileBrowser').innerHTML = '<div style="color: red; padding: 10px;">Error loading files</div>';
+                          });
+                  }
+                  
+                  function handleFileClick(path, type, name) {
+                      if (type === 'dir') {
+                          loadFiles(path);
+                      }
+                  }
+                  
+                  function refreshFiles() {
+                      loadFiles(currentPath);
+                  }
+                  
+                  function setDefaultTime() {
+                      const now = new Date();
+                      const nextHour = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0);
+                      let hour = nextHour.getHours();
+                      const ampm = hour >= 12 ? 'pm' : 'am';
+                      if (hour > 12) hour -= 12;
+                      if (hour === 0) hour = 12;
+                      return `${hour}${ampm}`;
+                  }
+                  
+                  function parseScheduleInput(input, type) {
+                      if (type === 'delay') {
+                          // Parse delay: 5m, 30s, 2h, or plain number (seconds)
+                          const match = input.match(/^(\d+)([smh]?)$/);
+                          if (!match) {
+                              throw new Error('Invalid delay format. Use: 5m, 30s, 2h, or 90');
+                          }
+                          
+                          const value = parseInt(match[1]);
+                          const unit = match[2] || 's';
+                          const now = new Date().getTime();
+                          let delayMs;
+                          
+                          switch (unit) {
+                              case 's': delayMs = value * 1000; break;
+                              case 'm': delayMs = value * 60 * 1000; break;
+                              case 'h': delayMs = value * 3600 * 1000; break;
+                              default: delayMs = value * 1000; break;
+                          }
+                          
+                          return now + delayMs;
+                      } else if (type === 'date') {
+                          // Parse date/time: "2024-01-15 14:30"
+                          const dateTime = new Date(input);
+                          if (isNaN(dateTime.getTime())) {
+                              throw new Error('Invalid date/time format');
+                          }
+                          return dateTime.getTime();
+                      } else {
+                          // Parse time: 9pm, 14:30, 2:15pm
+                          const now = new Date();
+                          let targetTime;
+                          
+                          if (input.includes('pm') || input.includes('am')) {
+                              // 12-hour format
+                              const match = input.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
+                              if (!match) {
+                                  throw new Error('Invalid time format. Use: 9pm, 2:15pm, 11am');
+                              }
+                              
+                              let hours = parseInt(match[1]);
+                              const minutes = parseInt(match[2] || '0');
+                              const period = match[3].toLowerCase();
+                              
+                              if (period === 'pm' && hours !== 12) hours += 12;
+                              if (period === 'am' && hours === 12) hours = 0;
+                              
+                              targetTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
+                          } else {
+                              // 24-hour format
+                              const match = input.match(/^(\d{1,2}):(\d{2})$/);
+                              if (!match) {
+                                  throw new Error('Invalid time format. Use: 14:30, 09:00');
+                              }
+                              
+                              const hours = parseInt(match[1]);
+                              const minutes = parseInt(match[2]);
+                              
+                              targetTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
+                          }
+                          
+                          // If time has passed today, schedule for tomorrow
+                          if (targetTime <= now) {
+                              targetTime.setDate(targetTime.getDate() + 1);
+                          }
+                          
+                          return targetTime.getTime();
+                      }
+                  }
+                  
+                  function scheduleMessage() {
+                      const message = document.getElementById('timedMessage').value.trim();
+                      const scheduleType = document.getElementById('scheduleType').value;
+                      let scheduleInput = document.getElementById('scheduleInput').value.trim();
+                      
+                      if (!message) {
+                          alert('Please enter a message or command');
+                          return;
+                      }
+                      
+                      // Handle date/time input type
+                      if (scheduleType === 'date') {
+                          const dateInput = document.getElementById('scheduleDate').value;
+                          const timeInput = document.getElementById('scheduleTime').value;
+                          if (!dateInput || !timeInput) {
+                              alert('Please select both date and time');
+                              return;
+                          }
+                          scheduleInput = `${dateInput} ${timeInput}`;
+                      } else if (!scheduleInput) {
+                          alert('Please enter a schedule time');
+                          return;
+                      }
+                      
+                      let executeTime;
+                      try {
+                          executeTime = parseScheduleInput(scheduleInput, scheduleType);
+                      } catch (error) {
+                          alert(error.message);
+                          return;
+                      }
+                      
+                      const now = new Date().getTime();
+                      if (executeTime <= now) {
+                          alert('Schedule time must be in the future');
+                          return;
+                      }
+                      
+                      // Parse multiple commands
+                      const commands = message.split(/[;\n]/)
+                          .map(cmd => cmd.trim())
+                          .filter(cmd => cmd.length > 0);
+                      
+                      // Add each command to the queue
+                      commands.forEach((cmd, index) => {
+                          const cmdExecuteTime = new Date(executeTime + (index * 1000)); // 1 second apart
+                          const commandObj = {
+                              id: nextCommandId++,
+                              command: cmd,
+                              executeTime: cmdExecuteTime,
+                              status: 'queued'
+                          };
+                          commandQueue.push(commandObj);
+                      });
+                      
+                      // Sort queue by execution time
+                      commandQueue.sort((a, b) => a.executeTime - b.executeTime);
+                      
+                      updateQueueDisplay();
+                      processQueue();
+                      
+                      const status = document.getElementById('scheduleStatus');
+                      status.className = 'status-text status-success';
+                      status.textContent = `✅ Added ${commands.length} command(s) to queue`;
+                      setTimeout(() => status.textContent = '', 3000);
+                      
+                      // Clear the input
+                      document.getElementById('timedMessage').value = '';
+                  }
+                  
+                  function cancelScheduled() {
+                      if (scheduledTimeout) {
+                          clearTimeout(scheduledTimeout);
+                          scheduledTimeout = null;
+                      }
+                      if (countdownInterval) {
+                          clearInterval(countdownInterval);
+                          countdownInterval = null;
+                      }
+                      const status = document.getElementById('scheduleStatus');
+                      status.className = 'status-text status-error';
+                      status.textContent = '❌ Schedule cancelled';
+                      setTimeout(() => status.textContent = '', 2000);
+                  }
+                  
+                  function updateQueueDisplay() {
+                      const queueDisplay = document.getElementById('scheduledQueue');
+                      if (commandQueue.length === 0) {
+                          queueDisplay.innerHTML = '<div style="color: #718096; text-align: center;">No scheduled commands</div>';
+                          return;
+                      }
+                      
+                      const now = new Date();
+                      queueDisplay.innerHTML = commandQueue.map(cmd => {
+                          const timeLeft = Math.max(0, Math.floor((cmd.executeTime - now) / 1000));
+                          const timeStr = timeLeft > 0 ? 
+                              (timeLeft < 60 ? `${timeLeft}s` : 
+                               timeLeft < 3600 ? `${Math.floor(timeLeft/60)}m` : 
+                               `${Math.floor(timeLeft/3600)}h`) : 'Now';
+                          
+                          const statusIcon = cmd.status === 'queued' ? '⏳' : 
+                                           cmd.status === 'running' ? '🔄' : '✅';
+                          
+                          return `
+                              <div style="display: flex; justify-content: space-between; align-items: center; padding: 2px 0; border-bottom: 1px solid #e2e8f0;">
+                                  <div style="flex: 1;">
+                                      <div style="font-weight: 500; color: #2d3748;">${cmd.command.substring(0, 25)}${cmd.command.length > 25 ? '...' : ''}</div>
+                                      <div style="color: #718096; font-size: 10px;">${statusIcon} ${timeStr} - ${cmd.executeTime.toLocaleTimeString()}</div>
+                                  </div>
+                                  <button onclick="removeCommand(${cmd.id})" style="background: none; border: none; color: #e53e3e; cursor: pointer; font-size: 12px;">❌</button>
+                              </div>
+                          `;
+                      }).join('');
+                  }
+                  
+                  function processQueue() {
+                      commandQueue.forEach(cmd => {
+                          if (cmd.status === 'queued') {
+                              const delay = Math.max(0, cmd.executeTime - new Date());
+                              setTimeout(() => {
+                                  if (cmd.status === 'queued') { // Check if not cancelled
+                                      cmd.status = 'running';
+                                      updateQueueDisplay();
+                                      sendTimedMessage(cmd.command);
+                                      cmd.status = 'completed';
+                                      
+                                      // Remove completed command after 5 seconds
+                                      setTimeout(() => {
+                                          commandQueue = commandQueue.filter(c => c.id !== cmd.id);
+                                          updateQueueDisplay();
+                                      }, 5000);
+                                  }
+                              }, delay);
+                          }
+                      });
+                  }
+                  
+                  function removeCommand(id) {
+                      commandQueue = commandQueue.filter(cmd => cmd.id !== id);
+                      updateQueueDisplay();
+                  }
+                  
+                  function cancelNext() {
+                      if (commandQueue.length > 0) {
+                          const nextCmd = commandQueue.find(cmd => cmd.status === 'queued');
+                          if (nextCmd) {
+                              removeCommand(nextCmd.id);
+                              const status = document.getElementById('scheduleStatus');
+                              status.className = 'status-text status-error';
+                              status.textContent = '❌ Next command cancelled';
+                              setTimeout(() => status.textContent = '', 2000);
+                          }
+                      }
+                  }
+                  
+                  function clearAllScheduled() {
+                      commandQueue = [];
+                      updateQueueDisplay();
+                      const status = document.getElementById('scheduleStatus');
+                      status.className = 'status-text status-error';
+                      status.textContent = '🗑️ All commands cleared';
+                      setTimeout(() => status.textContent = '', 2000);
+                  }
+                  
+                  function toggleScheduleType() {
+                      const scheduleType = document.getElementById('scheduleType').value;
+                      const dateTimeInputs = document.getElementById('dateTimeInputs');
+                      const scheduleInput = document.getElementById('scheduleInput');
+                      
+                      if (scheduleType === 'date') {
+                          dateTimeInputs.style.display = 'flex';
+                          scheduleInput.style.display = 'none';
+                          
+                          // Set default to today's date and next hour
+                          const now = new Date();
+                          const nextHour = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0);
+                          const today = nextHour.toISOString().split('T')[0];
+                          const time = nextHour.toTimeString().slice(0, 5);
+                          document.getElementById('scheduleDate').value = today;
+                          document.getElementById('scheduleTime').value = time;
+                      } else {
+                          dateTimeInputs.style.display = 'none';
+                          scheduleInput.style.display = 'block';
+                          
+                          if (scheduleType === 'delay') {
+                              scheduleInput.placeholder = '5m, 30s, 1h';
+                              scheduleInput.value = '5m';
+                          } else {
+                              // Set default to next hour in 12-hour format with easy AM/PM
+                              const now = new Date();
+                              const nextHour = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0);
+                              let hour = nextHour.getHours();
+                              const ampm = hour >= 12 ? 'pm' : 'am';
+                              if (hour > 12) hour -= 12;
+                              if (hour === 0) hour = 12;
+                              
+                              scheduleInput.placeholder = 'Try: 9am, 2:30pm, 14:30, or just click to cycle AM/PM';
+                              scheduleInput.value = `${hour}${ampm}`;
+                              
+                              // Add click handler for easy AM/PM toggle
+                              scheduleInput.onclick = function() {
+                                  const val = this.value.trim();
+                                  if (val.endsWith('am')) {
+                                      this.value = val.replace('am', 'pm');
+                                  } else if (val.endsWith('pm')) {
+                                      this.value = val.replace('pm', 'am');
+                                  }
+                              };
+                          }
+                      }
+                  }
+
+                  function sendTimedMessage(message) {
+                      fetch('/api/send-command', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ command: message, notify_mqtt: remoteMode })
+                      })
+                      .then(response => response.json())
+                      .then(result => {
+                          console.log('Command sent:', message);
+                          
+                          // If in remote mode, send additional MQTT notification about the command
+                          if (remoteMode) {
+                              const topic = document.getElementById('mqttTopic').value;
+                              fetch('/api/test-mqtt', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ 
+                                      topic: topic,
+                                      message: `🤖 Scheduled command executed: "${message}" at ${new Date().toLocaleTimeString()}`
+                                  })
+                              });
+                          }
+                      })
+                      .catch(error => {
+                          console.error('Failed to send command:', error);
+                      });
+                  }
+                  
+                  function testMQTT() {
+                      const topic = document.getElementById('mqttTopic').value;
+                      const status = document.getElementById('mqttStatus');
+                      status.className = 'status-text status-info';
+                      status.textContent = 'Testing MQTT connection...';
+                      
+                      fetch('/api/test-mqtt', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ 
+                              topic: topic,
+                              message: 'Test message from AI Terminal - ' + new Date().toLocaleTimeString()
+                          })
+                      })
+                      .then(response => response.json())
+                      .then(result => {
+                          if (result.success) {
+                              status.className = 'status-text status-success';
+                              status.textContent = '✅ MQTT test successful!';
+                          } else {
+                              status.className = 'status-text status-error';
+                              status.textContent = '❌ MQTT test failed: ' + (result.error || 'Unknown error');
+                          }
+                      })
+                      .catch(error => {
+                          status.className = 'status-text status-error';
+                          status.textContent = '❌ Network error: ' + error.message;
+                      });
+                  }
+                  
+                  function checkMQTTStatus() {
+                      const status = document.getElementById('mqttStatus');
+                      status.className = 'status-text status-info';
+                      status.textContent = 'Checking MQTT broker...';
+                      
+                      fetch('/api/mqtt-status', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' }
+                      })
+                      .then(response => response.json())
+                      .then(result => {
+                          if (result.connected) {
+                              status.className = 'status-text status-success';
+                              status.textContent = '🟢 MQTT broker connected (10.0.1.101:1883)';
+                          } else {
+                              status.className = 'status-text status-error';
+                              status.textContent = '🔴 MQTT broker disconnected';
+                          }
+                      })
+                      .catch(error => {
+                          status.className = 'status-text status-error';
+                          status.textContent = '❌ Status check failed: ' + error.message;
+                      });
+                  }
+                  
+                  function toggleRemote() {
+                      remoteMode = !remoteMode;
+                      const statusIndicator = document.getElementById('remoteStatusIndicator');
+                      const remoteBtn = document.getElementById('remoteBtn');
+                      
+                      if (remoteMode) {
+                          statusIndicator.textContent = 'AI ACTIVE';
+                          statusIndicator.className = 'remote-status-indicator remote-status-active';
+                          remoteBtn.className = 'btn remote-active';
+                          remoteBtn.textContent = '🟢 Remote Active';
+                          
+                          // Send MQTT notification
+                          const topic = document.getElementById('mqttTopic').value;
+                          fetch('/api/test-mqtt', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ 
+                                  topic: topic,
+                                  message: '🟢 AI Remote mode ENABLED - Session active for Claude interactions'
+                              })
+                          });
+                      } else {
+                          statusIndicator.textContent = 'Remote: OFF';
+                          statusIndicator.className = 'remote-status-indicator remote-status-inactive';
+                          remoteBtn.className = 'btn';
+                          remoteBtn.textContent = '📡 Remote Mode';
+                          
+                          // Send MQTT notification
+                          const topic = document.getElementById('mqttTopic').value;
+                          fetch('/api/test-mqtt', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ 
+                                  topic: topic,
+                                  message: '🔴 AI Remote mode DISABLED'
+                              })
+                          });
+                      }
+                  }
+                  
+                  // Q&A System Functions
+                  function showQAModal(question, options) {
+                      const modal = document.getElementById('qaModal');
+                      const questionEl = document.getElementById('qaQuestion');
+                      const optionsEl = document.getElementById('qaOptions');
+                      const sendBtn = document.getElementById('qaSendBtn');
+                      
+                      questionEl.textContent = question;
+                      optionsEl.innerHTML = '';
+                      selectedOption = null;
+                      sendBtn.disabled = true;
+                      
+                      options.forEach((option, index) => {
+                          const optionEl = document.createElement('div');
+                          optionEl.className = 'qa-option';
+                          optionEl.textContent = `${index + 1}. ${option}`;
+                          optionEl.onclick = () => selectOption(index + 1, option, optionEl);
+                          optionsEl.appendChild(optionEl);
+                      });
+                      
+                      modal.classList.add('show');
+                  }
+                  
+                  function selectOption(optionNumber, optionText, optionEl) {
+                      // Remove previous selection
+                      document.querySelectorAll('.qa-option').forEach(el => el.classList.remove('selected'));
+                      
+                      // Select current option
+                      optionEl.classList.add('selected');
+                      selectedOption = { number: optionNumber, text: optionText };
+                      
+                      // Enable send button
+                      document.getElementById('qaSendBtn').disabled = false;
+                  }
+                  
+                  function closeQAModal() {
+                      document.getElementById('qaModal').classList.remove('show');
+                      selectedOption = null;
+                  }
+                  
+                  function sendQAResponse() {
+                      if (!selectedOption) return;
+                      
+                      const response = selectedOption.number.toString();
+                      
+                      // Send response to terminal
+                      fetch('/api/send-command', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ command: response, notify_mqtt: false })
+                      })
+                      .then(response => response.json())
+                      .then(result => {
+                          console.log('Q&A Response sent:', selectedOption);
+                          
+                          // Send MQTT notification about the response
+                          if (remoteMode) {
+                              const topic = document.getElementById('mqttTopic').value;
+                              fetch('/api/test-mqtt', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ 
+                                      topic: topic,
+                                      message: `🤖 Q&A Response: Selected option ${selectedOption.number} - "${selectedOption.text}"`
+                                  })
+                              });
+                          }
+                          
+                          closeQAModal();
+                      })
+                      .catch(error => {
+                          console.error('Failed to send Q&A response:', error);
+                          alert('Failed to send response. Please try again.');
+                      });
+                  }
+                  
+                  // Test function to simulate Claude asking a question
+                  function testQA() {
+                      const sampleQuestion = "How would you like to proceed with the deployment?";
+                      const sampleOptions = [
+                          "Deploy to production immediately",
+                          "Run tests first, then deploy",
+                          "Cancel deployment and review changes"
+                      ];
+                      showQAModal(sampleQuestion, sampleOptions);
+                  }
+                  
+                  // Auto-detect questions from terminal output (experimental)
+                  function detectQuestionsInTerminal() {
+                      // This would monitor terminal output for patterns like:
+                      // "1) Option one"
+                      // "2) Option two" 
+                      // "Please choose (1-2):"
+                      // For now, this is a placeholder for future enhancement
+                  }
+                  
+                  // Add test button (can be removed later)
+                  window.testQA = testQA;
+                  
+                  // Initialize interface
+                  loadFiles();
+                  updateQueueDisplay();
+                  
+                  // Set initial default time to next hour
+                  document.getElementById('scheduleInput').value = setDefaultTime();
+                  
+                  // Auto-update queue display every second
+                  setInterval(updateQueueDisplay, 1000);
+              </script>
+          </body>
+          </html>'''
+                  
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/html; charset=utf-8')
+                  self.end_headers()
+                  self.wfile.write(html.encode('utf-8'))
+              
+              def send_mobile_ui(self):
+                  html = '''<!DOCTYPE html>
+          <html>
+          <head>
+              <title>AI Terminal Mobile</title>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+              <style>
+                  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+                  
+                  * { 
+                      margin: 0; 
+                      padding: 0; 
+                      box-sizing: border-box; 
+                      -webkit-tap-highlight-color: transparent;
+                  }
+                  
+                  body { 
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+                      color: white;
+                      min-height: 100vh;
+                      overflow-x: hidden;
+                      padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
+                  }
+                  
+                  .container {
+                      min-height: 100vh;
+                      display: flex;
+                      flex-direction: column;
+                      padding: 20px;
+                      gap: 20px;
+                  }
+                  
+                  .header {
+                      text-align: center;
+                      padding: 20px 0;
+                  }
+                  
+                  .header h1 {
+                      font-size: 28px;
+                      font-weight: 700;
+                      margin-bottom: 8px;
+                      text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+                  }
+                  
+                  .header .subtitle {
+                      font-size: 16px;
+                      opacity: 0.9;
+                      font-weight: 400;
+                  }
+                  
+                  .status-card {
+                      background: rgba(255, 255, 255, 0.15);
+                      backdrop-filter: blur(10px);
+                      border-radius: 16px;
+                      padding: 20px;
+                      border: 1px solid rgba(255, 255, 255, 0.2);
+                      box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+                  }
+                  
+                  .status-row {
+                      display: flex;
+                      justify-content: space-between;
+                      align-items: center;
+                      margin-bottom: 16px;
+                  }
+                  
+                  .status-row:last-child {
+                      margin-bottom: 0;
+                  }
+                  
+                  .status-label {
+                      font-weight: 500;
+                      font-size: 16px;
+                  }
+                  
+                  .status-value {
+                      font-weight: 600;
+                      font-size: 16px;
+                  }
+                  
+                  .status-active {
+                      color: #4ade80;
+                      text-shadow: 0 0 8px rgba(74, 222, 128, 0.5);
+                  }
+                  
+                  .status-inactive {
+                      color: #f87171;
+                      text-shadow: 0 0 8px rgba(248, 113, 113, 0.5);
+                  }
+                  
+                  .toggle-btn {
+                      background: rgba(255, 255, 255, 0.2);
+                      border: 2px solid rgba(255, 255, 255, 0.3);
+                      border-radius: 50px;
+                      padding: 16px 24px;
+                      color: white;
+                      font-weight: 600;
+                      font-size: 18px;
+                      cursor: pointer;
+                      transition: all 0.3s ease;
+                      width: 100%;
+                      margin-bottom: 20px;
+                      text-transform: uppercase;
+                      letter-spacing: 1px;
+                  }
+                  
+                  .toggle-btn:active {
+                      transform: scale(0.95);
+                  }
+                  
+                  .toggle-btn.active {
+                      background: rgba(74, 222, 128, 0.3);
+                      border-color: #4ade80;
+                      box-shadow: 0 0 20px rgba(74, 222, 128, 0.3);
+                  }
+                  
+                  .quick-commands {
+                      display: grid;
+                      grid-template-columns: 1fr 1fr;
+                      gap: 12px;
+                      margin-bottom: 20px;
+                  }
+                  
+                  .quick-cmd {
+                      background: rgba(255, 255, 255, 0.15);
+                      border: 1px solid rgba(255, 255, 255, 0.2);
+                      border-radius: 12px;
+                      padding: 16px;
+                      color: white;
+                      font-weight: 500;
+                      font-size: 14px;
+                      cursor: pointer;
+                      transition: all 0.2s ease;
+                      text-align: center;
+                      min-height: 60px;
+                      display: flex;
+                      align-items: center;
+                      justify-content: center;
+                  }
+                  
+                  .quick-cmd:active {
+                      transform: scale(0.95);
+                      background: rgba(255, 255, 255, 0.25);
+                  }
+                  
+                  .command-input {
+                      background: rgba(255, 255, 255, 0.15);
+                      border: 1px solid rgba(255, 255, 255, 0.3);
+                      border-radius: 12px;
+                      padding: 16px;
+                      color: white;
+                      font-size: 16px;
+                      width: 100%;
+                      margin-bottom: 12px;
+                      backdrop-filter: blur(10px);
+                  }
+                  
+                  .command-input::placeholder {
+                      color: rgba(255, 255, 255, 0.7);
+                  }
+                  
+                  .command-input:focus {
+                      outline: none;
+                      border-color: rgba(255, 255, 255, 0.5);
+                      box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
+                  }
+                  
+                  .send-btn {
+                      background: rgba(255, 255, 255, 0.9);
+                      color: #667eea;
+                      border: none;
+                      border-radius: 12px;
+                      padding: 16px;
+                      font-weight: 600;
+                      font-size: 16px;
+                      cursor: pointer;
+                      transition: all 0.2s ease;
+                      width: 100%;
+                      margin-bottom: 20px;
+                  }
+                  
+                  .send-btn:active {
+                      transform: scale(0.95);
+                      background: white;
+                  }
+                  
+                  /* Q&A Modal for Mobile */
+                  .qa-modal {
+                      position: fixed;
+                      top: 0;
+                      left: 0;
+                      right: 0;
+                      bottom: 0;
+                      background: rgba(0, 0, 0, 0.9);
+                      display: none;
+                      z-index: 1000;
+                      align-items: center;
+                      justify-content: center;
+                      padding: 20px;
+                  }
+                  
+                  .qa-modal.show {
+                      display: flex;
+                  }
+                  
+                  .qa-content {
+                      background: white;
+                      border-radius: 20px;
+                      padding: 24px;
+                      width: 100%;
+                      max-width: 400px;
+                      color: #2d3748;
+                      animation: qa-slide-up 0.3s ease-out;
+                      box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+                  }
+                  
+                  @keyframes qa-slide-up {
+                      from {
+                          opacity: 0;
+                          transform: translateY(40px);
+                      }
+                      to {
+                          opacity: 1;
+                          transform: translateY(0);
+                      }
+                  }
+                  
+                  .qa-title {
+                      font-size: 20px;
+                      font-weight: 700;
+                      text-align: center;
+                      margin-bottom: 16px;
+                      color: #667eea;
+                  }
+                  
+                  .qa-question {
+                      font-size: 16px;
+                      line-height: 1.5;
+                      margin-bottom: 24px;
+                      padding: 16px;
+                      background: #f8fafc;
+                      border-radius: 12px;
+                      border-left: 4px solid #667eea;
+                  }
+                  
+                  .qa-options {
+                      display: flex;
+                      flex-direction: column;
+                      gap: 12px;
+                      margin-bottom: 24px;
+                  }
+                  
+                  .qa-option {
+                      background: #f8fafc;
+                      border: 2px solid #e2e8f0;
+                      border-radius: 12px;
+                      padding: 16px;
+                      cursor: pointer;
+                      transition: all 0.2s ease;
+                      font-size: 16px;
+                      font-weight: 500;
+                      min-height: 56px;
+                      display: flex;
+                      align-items: center;
+                  }
+                  
+                  .qa-option:active {
+                      transform: scale(0.98);
+                  }
+                  
+                  .qa-option.selected {
+                      border-color: #667eea;
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      color: white;
+                  }
+                  
+                  .qa-actions {
+                      display: flex;
+                      gap: 12px;
+                  }
+                  
+                  .qa-btn {
+                      flex: 1;
+                      padding: 16px;
+                      border-radius: 12px;
+                      font-size: 16px;
+                      font-weight: 600;
+                      cursor: pointer;
+                      transition: all 0.2s ease;
+                      border: none;
+                  }
+                  
+                  .qa-btn:active {
+                      transform: scale(0.95);
+                  }
+                  
+                  .qa-btn-cancel {
+                      background: #e2e8f0;
+                      color: #4a5568;
+                  }
+                  
+                  .qa-btn-send {
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      color: white;
+                  }
+                  
+                  .qa-btn-send:disabled {
+                      opacity: 0.5;
+                      cursor: not-allowed;
+                  }
+                  
+                  .section-title {
+                      font-size: 18px;
+                      font-weight: 600;
+                      margin-bottom: 16px;
+                      text-shadow: 0 1px 3px rgba(0,0,0,0.3);
+                  }
+                  
+                  .footer {
+                      text-align: center;
+                      padding: 20px 0;
+                      opacity: 0.8;
+                      font-size: 14px;
+                  }
+                  
+                  .footer a {
+                      color: white;
+                      text-decoration: none;
+                      font-weight: 500;
+                  }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <div class="header">
+                      <h1>AI Terminal</h1>
+                      <div class="subtitle">Mobile Command Center</div>
+                  </div>
+                  
+                  <div class="status-card">
+                      <div class="status-row">
+                          <div class="status-label">Remote Mode</div>
+                          <div class="status-value" id="remoteStatus">OFF</div>
+                      </div>
+                      <div class="status-row">
+                          <div class="status-label">MQTT Broker</div>
+                          <div class="status-value">10.0.1.101</div>
+                      </div>
+                  </div>
+                  
+                  <button class="toggle-btn" id="remoteToggle" onclick="toggleRemote()">
+                      Enable Remote Mode
+                  </button>
+                  
+                  <div class="section-title">Quick Commands</div>
+                  <div class="quick-commands">
+                      <div class="quick-cmd" onclick="sendCommand('ls -la')">List Files</div>
+                      <div class="quick-cmd" onclick="sendCommand('pwd')">Current Dir</div>
+                      <div class="quick-cmd" onclick="sendCommand('kubectl get pods')">Get Pods</div>
+                      <div class="quick-cmd" onclick="sendCommand('docker ps')">Docker PS</div>
+                      <div class="quick-cmd" onclick="sendCommand('top')">System Top</div>
+                      <div class="quick-cmd" onclick="sendCommand('df -h')">Disk Usage</div>
+                  </div>
+                  
+                  <div class="section-title">Custom Command</div>
+                  <input type="text" class="command-input" id="customCommand" placeholder="Enter your command...">
+                  <button class="send-btn" onclick="sendCustomCommand()">Send Command</button>
+                  
+                  <div class="section-title">Terminal Output</div>
+                  <div style="background: rgba(0,0,0,0.4); border-radius: 12px; padding: 16px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.2);">
+                      <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                          <button class="send-btn" onclick="refreshOutput()" style="flex: 1; margin-right: 8px; padding: 8px; font-size: 14px;">🔄 Refresh</button>
+                          <button class="send-btn" onclick="clearOutput()" style="flex: 1; margin-left: 8px; padding: 8px; font-size: 14px;">🗑️ Clear</button>
+                      </div>
+                      <div id="terminalOutput" style="font-family: 'Fira Code', Consolas, monospace; font-size: 13px; color: #00ff41; background: #000; padding: 12px; border-radius: 8px; height: 200px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word;">
+                          <div style="color: #888;">Terminal output will appear here...</div>
+                      </div>
+                  </div>
+                  
+                  <div class="section-title">Test & Debug</div>
+                  <button class="send-btn" onclick="testQA()" style="background: rgba(255,255,255,0.2); color: white;">Test Q&A Modal</button>
+                  
+                  <div class="footer">
+                      <a href="/">Switch to Desktop View</a>
+                  </div>
+              </div>
+              
+              <!-- Q&A Modal -->
+              <div class="qa-modal" id="qaModal">
+                  <div class="qa-content">
+                      <div class="qa-title">Claude is asking</div>
+                      <div class="qa-question" id="qaQuestion">Loading question...</div>
+                      <div class="qa-options" id="qaOptions"></div>
+                      <div class="qa-actions">
+                          <button class="qa-btn qa-btn-cancel" onclick="closeQAModal()">Cancel</button>
+                          <button class="qa-btn qa-btn-send" id="qaSendBtn" onclick="sendQAResponse()" disabled>Send</button>
+                      </div>
+                  </div>
+              </div>
+              
+              <script>
+                  let remoteMode = false;
+                  let selectedOption = null;
+                  
+                  function toggleRemote() {
+                      remoteMode = !remoteMode;
+                      const statusEl = document.getElementById('remoteStatus');
+                      const toggleBtn = document.getElementById('remoteToggle');
+                      
+                      if (remoteMode) {
+                          statusEl.textContent = 'ACTIVE';
+                          statusEl.className = 'status-value status-active';
+                          toggleBtn.textContent = 'Disable Remote Mode';
+                          toggleBtn.classList.add('active');
+                          
+                          // Send MQTT notification
+                          sendMQTT('🟢 Mobile: AI Remote mode ENABLED');
+                      } else {
+                          statusEl.textContent = 'OFF';
+                          statusEl.className = 'status-value status-inactive';
+                          toggleBtn.textContent = 'Enable Remote Mode';
+                          toggleBtn.classList.remove('active');
+                          
+                          // Send MQTT notification
+                          sendMQTT('🔴 Mobile: AI Remote mode DISABLED');
+                      }
+                  }
+                  
+                  
+                  function sendCustomCommand() {
+                      const command = document.getElementById('customCommand').value.trim();
+                      if (!command) {
+                          alert('Please enter a command');
+                          return;
+                      }
+                      sendCommand(command);
+                      document.getElementById('customCommand').value = '';
+                  }
+                  
+                  function sendMQTT(message) {
+                      fetch('/api/test-mqtt', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ 
+                              topic: 'ai_terminal/comms',
+                              message: message
+                          })
+                      });
+                  }
+                  
+                  // Terminal Output Functions
+                  function refreshOutput() {
+                      fetch('/api/terminal-output')
+                          .then(response => response.json())
+                          .then(data => {
+                              const outputEl = document.getElementById('terminalOutput');
+                              if (data.output) {
+                                  outputEl.innerHTML = data.output.split('\\n').map(line => 
+                                      `<div>${escapeHtml(line) || '&nbsp;'}</div>`
+                                  ).join('');
+                                  outputEl.scrollTop = outputEl.scrollHeight;
+                              } else {
+                                  outputEl.innerHTML = '<div style="color: #888;">No output available</div>';
+                              }
+                          })
+                          .catch(error => {
+                              console.error('Failed to fetch output:', error);
+                              document.getElementById('terminalOutput').innerHTML = '<div style="color: #ff6b6b;">Error fetching output</div>';
+                          });
+                  }
+                  
+                  function clearOutput() {
+                      document.getElementById('terminalOutput').innerHTML = '<div style="color: #888;">Output cleared</div>';
+                      // Send clear command to terminal
+                      sendCommand('clear');
+                  }
+                  
+                  function escapeHtml(text) {
+                      const div = document.createElement('div');
+                      div.textContent = text;
+                      return div.innerHTML;
+                  }
+                  
+                  // Auto-refresh output every 3 seconds when commands are sent
+                  function sendCommand(command) {
+                      fetch('/api/send-command', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ command: command, notify_mqtt: false })
+                      })
+                      .then(response => response.json())
+                      .then(result => {
+                          console.log('Command sent:', command);
+                          
+                          // Update output after a short delay
+                          setTimeout(() => refreshOutput(), 1000);
+                          
+                          if (remoteMode) {
+                              sendMQTT(`📱 Mobile command: ${command}`);
+                          }
+                      })
+                      .catch(error => {
+                          console.error('Failed to send command:', error);
+                          alert('Failed to send command');
+                      });
+                  }
+                  
+                  // Q&A System for Mobile
+                  function showQAModal(question, options) {
+                      const modal = document.getElementById('qaModal');
+                      const questionEl = document.getElementById('qaQuestion');
+                      const optionsEl = document.getElementById('qaOptions');
+                      const sendBtn = document.getElementById('qaSendBtn');
+                      
+                      questionEl.textContent = question;
+                      optionsEl.innerHTML = '';
+                      selectedOption = null;
+                      sendBtn.disabled = true;
+                      
+                      options.forEach((option, index) => {
+                          const optionEl = document.createElement('div');
+                          optionEl.className = 'qa-option';
+                          optionEl.textContent = `${index + 1}. ${option}`;
+                          optionEl.onclick = () => selectOption(index + 1, option, optionEl);
+                          optionsEl.appendChild(optionEl);
+                      });
+                      
+                      modal.classList.add('show');
+                  }
+                  
+                  function selectOption(optionNumber, optionText, optionEl) {
+                      document.querySelectorAll('.qa-option').forEach(el => el.classList.remove('selected'));
+                      optionEl.classList.add('selected');
+                      selectedOption = { number: optionNumber, text: optionText };
+                      document.getElementById('qaSendBtn').disabled = false;
+                  }
+                  
+                  function closeQAModal() {
+                      document.getElementById('qaModal').classList.remove('show');
+                      selectedOption = null;
+                  }
+                  
+                  function sendQAResponse() {
+                      if (!selectedOption) return;
+                      
+                      const response = selectedOption.number.toString();
+                      
+                      fetch('/api/send-command', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ command: response, notify_mqtt: false })
+                      })
+                      .then(response => response.json())
+                      .then(result => {
+                          console.log('Q&A Response sent:', selectedOption);
+                          
+                          if (remoteMode) {
+                              sendMQTT(`📱 Q&A Response: Selected option ${selectedOption.number} - "${selectedOption.text}"`);
+                          }
+                          
+                          closeQAModal();
+                      })
+                      .catch(error => {
+                          console.error('Failed to send Q&A response:', error);
+                          alert('Failed to send response');
+                      });
+                  }
+                  
+                  function testQA() {
+                      const sampleQuestion = "How would you like to proceed with the mobile deployment?";
+                      const sampleOptions = [
+                          "Deploy to production now",
+                          "Run mobile tests first",
+                          "Cancel and review code"
+                      ];
+                      showQAModal(sampleQuestion, sampleOptions);
+                  }
+                  
+                  // Enter key handler for custom command
+                  document.getElementById('customCommand').addEventListener('keypress', function(e) {
+                      if (e.key === 'Enter') {
+                          sendCustomCommand();
+                      }
+                  });
+                  
+                  // Initialize mobile interface
+                  document.addEventListener('DOMContentLoaded', function() {
+                      // Load initial terminal output
+                      refreshOutput();
+                      
+                      // Auto-refresh output every 5 seconds
+                      setInterval(refreshOutput, 5000);
+                  });
+              </script>
+          </body>
+          </html>'''
+                  
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/html; charset=utf-8')
+                  self.end_headers()
+                  self.wfile.write(html.encode('utf-8'))
+              
+              def send_file_list(self):
+                  try:
+                      path_param = self.path.split('?path=')[-1] if '?path=' in self.path else ''
+                      current_path = Path('/mnt') / path_param if path_param else Path('/mnt')
+                      
+                      files = []
+                      if current_path.exists() and current_path.is_dir():
+                          if str(current_path) != '/mnt':
+                              parent = current_path.parent.relative_to(Path('/mnt'))
+                              files.append({
+                                  'name': '..',
+                                  'type': 'dir',
+                                  'path': str(parent) if str(parent) != '.' else '',
+                                  'size': 0
+                              })
+                          
+                          for item in sorted(current_path.iterdir()):
+                              rel_path = item.relative_to(Path('/mnt'))
+                              files.append({
+                                  'name': item.name,
+                                  'type': 'dir' if item.is_dir() else 'file',
+                                  'path': str(rel_path),
+                                  'size': item.stat().st_size if item.is_file() else 0
+                              })
+                      
+                      self.send_response(200)
+                      self.send_header('Content-type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps({
+                          'files': files,
+                          'current_path': str(current_path.relative_to(Path('/mnt'))) if str(current_path) != '/mnt' else ''
+                      }).encode())
+                  except Exception as e:
+                      self.send_error(500, str(e))
+              
+              def handle_send_command(self):
+                  try:
+                      content_length = int(self.headers['Content-Length'])
+                      post_data = self.rfile.read(content_length)
+                      data = json.loads(post_data.decode('utf-8'))
+                      
+                      command = data.get('command', '').strip()
+                      notify_mqtt = data.get('notify_mqtt', False)
+                      
+                      if not command:
+                          self.send_error(400, 'No command provided')
+                          return
+                      
+                      # Send command to tmux session
+                      result = subprocess.run([
+                          'tmux', 'send-keys', '-t', 'main', command, 'Enter'
+                      ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+                      
+                      if result.returncode == 0:
+                          # Send MQTT notification if requested
+                          if notify_mqtt:
+                              import json as json_module
+                              notification = {
+                                  'timestamp': time.time(),
+                                  'action': 'automated_command',
+                                  'command': command,
+                                  'source': 'ai_terminal_scheduler'
+                              }
+                              mqtt_client.publish('ai_terminal/activity', json_module.dumps(notification))
+                          
+                          self.send_response(200)
+                          self.send_header('Content-type', 'application/json')
+                          self.end_headers()
+                          self.wfile.write(json.dumps({
+                              'success': True,
+                              'command': command,
+                              'message': 'Command sent to terminal',
+                              'mqtt_notified': notify_mqtt
+                          }).encode())
+                      else:
+                          self.send_error(500, 'Failed to send command: ' + result.stderr)
+                          
+                  except Exception as e:
+                      self.send_error(500, str(e))
+              
+              def handle_test_mqtt(self):
+                  try:
+                      content_length = int(self.headers['Content-Length'])
+                      post_data = self.rfile.read(content_length)
+                      data = json.loads(post_data.decode('utf-8'))
+                      
+                      topic = data.get('topic', 'ai_terminal/comms')
+                      message = data.get('message', 'Test message from AI Terminal')
+                      
+                      # Test MQTT publish
+                      success = mqtt_client.publish(topic, message)
+                      
+                      self.send_response(200)
+                      self.send_header('Content-type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps({
+                          'success': success,
+                          'broker': '10.0.1.101:1883',
+                          'topic': topic,
+                          'message': message,
+                          'error': None if success else 'Failed to publish to MQTT broker'
+                      }).encode())
+                      
+                  except Exception as e:
+                      self.send_error(500, str(e))
+              
+              def get_terminal_output(self):
+                  try:
+                      # Get recent output from tmux session
+                      result = subprocess.run([
+                          'tmux', 'capture-pane', '-t', 'main', '-p'
+                      ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+                      
+                      if result.returncode == 0:
+                          output = result.stdout.strip()
+                          # Limit to last 100 lines to avoid overwhelming mobile interface
+                          lines = output.split('\n')
+                          if len(lines) > 100:
+                              lines = lines[-100:]
+                              output = '\n'.join(lines)
+                          
+                          self.send_response(200)
+                          self.send_header('Content-type', 'application/json')
+                          self.end_headers()
+                          self.wfile.write(json.dumps({
+                              'success': True,
+                              'output': output,
+                              'lines': len(lines)
+                          }).encode())
+                      else:
+                          self.send_response(200)
+                          self.send_header('Content-type', 'application/json')
+                          self.end_headers()
+                          self.wfile.write(json.dumps({
+                              'success': False,
+                              'output': 'Unable to capture terminal output',
+                              'error': result.stderr
+                          }).encode())
+                          
+                  except Exception as e:
+                      self.send_error(500, str(e))
+              
+              def proxy_to_ttyd(self):
+                  try:
+                      import urllib.request
+                      import urllib.error
+                      
+                      # Build the target URL
+                      target_path = self.path
+                      if target_path == '/terminal':
+                          target_path = '/'
+                      elif target_path.startswith('/terminal/'):
+                          target_path = target_path[9:]  # Remove '/terminal'
+                      
+                      target_url = f'http://localhost:7681{target_path}'
+                      if '?' in self.path:
+                          target_url += '?' + self.path.split('?', 1)[1]
+                      
+                      # Forward the request
+                      req = urllib.request.Request(target_url)
+                      
+                      # Copy headers from original request
+                      for header, value in self.headers.items():
+                          if header.lower() not in ['host']:
+                              req.add_header(header, value)
+                      
+                      try:
+                          response = urllib.request.urlopen(req)
+                          
+                          # Send response
+                          self.send_response(response.getcode())
+                          
+                          # Copy response headers
+                          for header, value in response.headers.items():
+                              self.send_header(header, value)
+                          self.end_headers()
+                          
+                          # Copy response body
+                          self.wfile.write(response.read())
+                          
+                      except urllib.error.HTTPError as e:
+                          self.send_error(e.code, str(e))
+                      except Exception as e:
+                          self.send_error(500, f'Proxy error: {str(e)}')
+                          
+                  except Exception as e:
+                      self.send_error(500, str(e))
+              
+              def handle_mqtt_status(self):
+                  try:
+                      # Check MQTT broker connectivity
+                      connected = mqtt_client.connect()
+                      
+                      self.send_response(200)
+                      self.send_header('Content-type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps({
+                          'connected': connected,
+                          'broker': '10.0.1.101:1883',
+                          'status': 'Connected' if connected else 'Disconnected'
+                      }).encode())
+                      
+                  except Exception as e:
+                      self.send_error(500, str(e))
+              
+              def handle_trigger_qa(self):
+                  try:
+                      content_length = int(self.headers['Content-Length'])
+                      post_data = self.rfile.read(content_length)
+                      data = json.loads(post_data.decode('utf-8'))
+                      
+                      question = data.get('question', '')
+                      options = data.get('options', [])
+                      
+                      if not question or not options or len(options) < 2:
+                          self.send_error(400, 'Question and at least 2 options required')
+                          return
+                      
+                      # Store the Q&A data for the frontend to pick up
+                      # In a real implementation, you might use WebSockets or Server-Sent Events
+                      # For now, we'll send an MQTT message to trigger the frontend
+                      qa_data = {
+                          'type': 'qa_question',
+                          'question': question,
+                          'options': options,
+                          'timestamp': time.time()
+                      }
+                      
+                      success = mqtt_client.publish('ai_terminal/qa', json.dumps(qa_data))
+                      
+                      self.send_response(200)
+                      self.send_header('Content-type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps({
+                          'success': success,
+                          'message': 'Q&A triggered' if success else 'Failed to trigger Q&A',
+                          'question': question,
+                          'options_count': len(options)
+                      }).encode())
+                      
+                  except Exception as e:
+                      self.send_error(500, str(e))
+          
+          if __name__ == '__main__':
+              port = 8080
+              with socketserver.TCPServer(("", port), FileHandler) as httpd:
+                  print("AI Terminal server running on port", port)
+                  httpd.serve_forever()
+          EOF
+          
+          chmod +x /tmp/server.py
+          python3 /tmp/server.py &
+          
+          sleep 3
+          echo "AI Terminal ready!"
+          echo "Web UI: port 8080"
+          echo "Terminal: port 7681"
+          echo "Colors: ENABLED"
+          
+          wait
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        env:
+        - name: TERM
+          value: "xterm-256color"
+        - name: COLORTERM
+          value: "truecolor"
+        - name: FORCE_COLOR
+          value: "1"
+        - name: CLICOLOR_FORCE
+          value: "1"
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: wiredquill-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/WiredQuill
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-service
+  namespace: k8s-tmux
+spec:
+  selector:
+    app: k8s-tmux
+  ports:
+  - name: web-ui
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+  - name: terminal
+    protocol: TCP
+    port: 7681
+    targetPort: 7681
+  type: LoadBalancer

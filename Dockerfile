@@ -95,6 +95,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | g
     chmod +x /usr/local/bin/gh && \
     rm -rf /tmp/gh_* || echo "gh installation completed with fallback"
 
+# Install Claude
+RUN curl -fsSL claude.ai/install.sh | bash
+
 # Create remote mode script
 RUN cat > /usr/local/bin/remote-toggle << 'EOF'
 #!/bin/bash

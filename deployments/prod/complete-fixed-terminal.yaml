@@ -1,0 +1,1105 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-tmux
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux
+  namespace: k8s-tmux
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux
+    spec:
+      containers:
+      - name: k8s-tmux
+        image: ghcr.io/wiredquill/k8s-tmux:latest
+        ports:
+        - containerPort: 7681
+        - containerPort: 8080
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - |
+          mkdir -p /mnt/k8s-tmux/uploads
+          chmod 755 /mnt/k8s-tmux/uploads
+          
+          # Install MQTT client tools
+          echo "Installing MQTT client tools..."
+          zypper refresh && zypper install -y mosquitto-clients || echo "MQTT client install failed, using fallback"
+          
+          export TERM=xterm-256color
+          export COLORTERM=truecolor
+          export FORCE_COLOR=1
+          export CLICOLOR_FORCE=1
+          
+          cd /mnt/k8s-tmux
+          tmux new-session -d -s main -c /mnt/k8s-tmux bash
+          tmux send-keys -t main 'export TERM=xterm-256color' Enter
+          tmux send-keys -t main 'export COLORTERM=truecolor' Enter
+          tmux send-keys -t main 'export FORCE_COLOR=1' Enter
+          tmux send-keys -t main 'export CLICOLOR_FORCE=1' Enter
+          tmux send-keys -t main 'alias ls="ls --color=auto"' Enter
+          tmux send-keys -t main 'alias ll="ls -la --color=auto"' Enter
+          tmux send-keys -t main 'clear' Enter
+          
+          # Verify tmux session exists
+          echo "Checking tmux session..."
+          tmux list-sessions
+          
+          # Start ttyd in background and wait for it to be ready
+          echo "Starting ttyd..."
+          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color tmux attach-session -t main > /tmp/ttyd.log 2>&1 &
+          TTYD_PID=$!
+          
+          # Wait for ttyd to start
+          sleep 3
+          if ps -p $TTYD_PID > /dev/null; then
+            echo "ttyd started successfully (PID: $TTYD_PID)"
+          else
+            echo "ERROR: ttyd failed to start"
+            cat /tmp/ttyd.log
+          fi
+          
+          # Create Python server script with COMPLETE AI Terminal functionality
+          cat > /tmp/server.py << 'EOF'
+          #!/usr/bin/env python3
+          import http.server
+          import socketserver
+          import urllib.parse
+          import json
+          import os
+          import cgi
+          import shutil
+          import subprocess
+          from pathlib import Path
+          import threading
+          import time
+          
+          # MQTT Client for communication
+          class MQTTClient:
+              def __init__(self, broker_host="10.0.1.101", broker_port=1883):
+                  self.broker_host = broker_host
+                  self.broker_port = broker_port
+                  self.client = None
+                  self.connected = False
+                  
+              def connect(self):
+                  try:
+                      # Simple MQTT connection test using socket
+                      import socket
+                      sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                      sock.settimeout(5)
+                      sock.connect((self.broker_host, self.broker_port))
+                      
+                      # Proper MQTT CONNECT packet with client ID
+                      client_id = f"ai_terminal_{int(time.time())}"
+                      client_id_bytes = client_id.encode('utf-8')
+                      
+                      connect_packet = bytearray()
+                      connect_packet.append(0x10)  # CONNECT packet type
+                      
+                      # Variable header + payload length calculation
+                      variable_header = bytearray()
+                      variable_header.extend([0x00, 0x04])  # Protocol name length
+                      variable_header.extend(b'MQTT')       # Protocol name
+                      variable_header.append(0x04)         # Protocol level
+                      variable_header.append(0x02)         # Connect flags (clean session)  
+                      variable_header.extend([0x00, 0x3c]) # Keep alive (60 seconds)
+                      
+                      # Payload (client ID)
+                      payload = bytearray()
+                      payload.extend(len(client_id_bytes).to_bytes(2, 'big'))
+                      payload.extend(client_id_bytes)
+                      
+                      # Remaining length
+                      remaining_length = len(variable_header) + len(payload)
+                      connect_packet.append(remaining_length)
+                      connect_packet.extend(variable_header)
+                      connect_packet.extend(payload)
+                      
+                      sock.send(connect_packet)
+                      response = sock.recv(4)
+                      
+                      # Check CONNACK response
+                      if len(response) >= 4 and response[0] == 0x20 and response[3] == 0x00:
+                          self.connected = True
+                          sock.close()
+                          return True
+                      else:
+                          self.connected = False
+                          sock.close()
+                          return False
+                          
+                  except Exception as e:
+                      self.connected = False
+                      return False
+                      
+              def publish(self, topic, message):
+                  try:
+                      # Try mosquitto_pub first
+                      result = subprocess.run([
+                          'mosquitto_pub', '-h', self.broker_host, '-p', str(self.broker_port),
+                          '-t', topic, '-m', message
+                      ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+                      if result.returncode == 0:
+                          return True
+                  except:
+                      pass
+                      
+                  try:
+                      # Proper MQTT publish using socket
+                      import socket
+                      sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                      sock.settimeout(5)
+                      sock.connect((self.broker_host, self.broker_port))
+                      
+                      # MQTT CONNECT first
+                      client_id = f"ai_terminal_pub_{int(time.time())}"
+                      client_id_bytes = client_id.encode('utf-8')
+                      
+                      connect_packet = bytearray()
+                      connect_packet.append(0x10)  # CONNECT
+                      
+                      variable_header = bytearray()
+                      variable_header.extend([0x00, 0x04])  # Protocol name length
+                      variable_header.extend(b'MQTT')       # Protocol name  
+                      variable_header.append(0x04)         # Protocol level
+                      variable_header.append(0x02)         # Clean session
+                      variable_header.extend([0x00, 0x3c]) # Keep alive
+                      
+                      payload = bytearray()
+                      payload.extend(len(client_id_bytes).to_bytes(2, 'big'))
+                      payload.extend(client_id_bytes)
+                      
+                      remaining_length = len(variable_header) + len(payload)
+                      connect_packet.append(remaining_length)
+                      connect_packet.extend(variable_header)
+                      connect_packet.extend(payload)
+                      
+                      sock.send(connect_packet)
+                      response = sock.recv(4)
+                      
+                      # Check CONNACK
+                      if len(response) >= 4 and response[0] == 0x20 and response[3] == 0x00:
+                          # Now send PUBLISH
+                          topic_bytes = topic.encode('utf-8')
+                          message_bytes = message.encode('utf-8')
+                          
+                          publish_packet = bytearray()
+                          publish_packet.append(0x30)  # PUBLISH
+                          remaining_length = 2 + len(topic_bytes) + len(message_bytes)
+                          publish_packet.append(remaining_length)
+                          publish_packet.extend(len(topic_bytes).to_bytes(2, 'big'))
+                          publish_packet.extend(topic_bytes)
+                          publish_packet.extend(message_bytes)
+                          
+                          sock.send(publish_packet)
+                          sock.close()
+                          return True
+                      
+                      sock.close()
+                      return False
+                  except:
+                      return False
+          
+          # Global MQTT client
+          mqtt_client = MQTTClient()
+          
+          class FileHandler(http.server.SimpleHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == '/':
+                      self.send_ui()
+                  elif self.path == '/mobile':
+                      self.send_mobile_ui()
+                  elif self.path.startswith('/api/files'):
+                      self.send_file_list()
+                  elif self.path == '/api/terminal-output':
+                      self.get_terminal_output()
+                  elif self.path == '/terminal':
+                      self.redirect_to_ttyd()
+                  else:
+                      super().do_GET()
+              
+              def do_POST(self):
+                  if self.path == '/api/send-command':
+                      self.handle_send_command()
+                  elif self.path == '/api/test-mqtt':
+                      self.handle_test_mqtt()
+                  elif self.path == '/api/mqtt-status':
+                      self.handle_mqtt_status()
+                  elif self.path == '/api/trigger-qa':
+                      self.handle_trigger_qa()
+                  else:
+                      self.send_error(404)
+              
+              def redirect_to_ttyd(self):
+                  """Redirect terminal requests to ttyd directly"""
+                  self.send_response(302)
+                  self.send_header('Location', f'http://{self.headers.get("Host", "localhost").split(":")[0]}:7681')
+                  self.end_headers()
+              
+              def send_file_list(self):
+                  """Handle file browser API requests"""
+                  try:
+                      # Parse path parameter
+                      query = urllib.parse.urlparse(self.path).query
+                      params = urllib.parse.parse_qs(query)
+                      path_param = params.get('path', [''])[0]
+                      
+                      # Base directory
+                      base_dir = '/mnt'
+                      full_path = os.path.join(base_dir, path_param) if path_param else base_dir
+                      
+                      if not os.path.exists(full_path):
+                          self.send_error(404, "Path not found")
+                          return
+                      
+                      files = []
+                      for item in os.listdir(full_path):
+                          item_path = os.path.join(full_path, item)
+                          relative_path = os.path.relpath(item_path, base_dir)
+                          
+                          if os.path.isdir(item_path):
+                              files.append({
+                                  "name": item,
+                                  "type": "dir",
+                                  "path": relative_path,
+                                  "size": 0
+                              })
+                          else:
+                              size = os.path.getsize(item_path)
+                              files.append({
+                                  "name": item,
+                                  "type": "file",
+                                  "path": relative_path,
+                                  "size": size
+                              })
+                      
+                      # Sort directories first, then files
+                      files.sort(key=lambda x: (x['type'] != 'dir', x['name'].lower()))
+                      
+                      response_data = {
+                          "files": files,
+                          "current_path": path_param
+                      }
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.send_header('Access-Control-Allow-Origin', '*')
+                      self.end_headers()
+                      self.wfile.write(json.dumps(response_data).encode())
+                      
+                  except Exception as e:
+                      self.send_error(500, f"Error listing files: {e}")
+              
+              def handle_send_command(self):
+                  """Handle command execution requests"""
+                  try:
+                      content_length = int(self.headers['Content-Length'])
+                      post_data = self.rfile.read(content_length)
+                      data = json.loads(post_data.decode('utf-8'))
+                      
+                      command = data.get('command', '')
+                      if not command:
+                          self.send_error(400, "No command provided")
+                          return
+                      
+                      # Send command to tmux session
+                      subprocess.run(['tmux', 'send-keys', '-t', 'main', command, 'Enter'])
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps({"status": "sent"}).encode())
+                      
+                  except Exception as e:
+                      self.send_error(500, f"Error sending command: {e}")
+              
+              def handle_test_mqtt(self):
+                  """Test MQTT connection"""
+                  try:
+                      connected = mqtt_client.connect()
+                      status = "connected" if connected else "failed"
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps({"status": status}).encode())
+                      
+                  except Exception as e:
+                      self.send_error(500, f"MQTT test error: {e}")
+              
+              def handle_mqtt_status(self):
+                  """Get MQTT status"""
+                  try:
+                      status = {
+                          "broker": mqtt_client.broker_host,
+                          "port": mqtt_client.broker_port,
+                          "connected": mqtt_client.connected
+                      }
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps(status).encode())
+                      
+                  except Exception as e:
+                      self.send_error(500, f"MQTT status error: {e}")
+              
+              def handle_trigger_qa(self):
+                  """Handle Q&A modal trigger for testing"""
+                  try:
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps({"status": "triggered"}).encode())
+                      
+                  except Exception as e:
+                      self.send_error(500, f"Q&A trigger error: {e}")
+              
+              def send_ui(self):
+                  """Send the COMPLETE AI Terminal UI with all original features"""
+                  html = '''<!DOCTYPE html>
+          <html>
+          <head>
+              <title>AI Terminal</title>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <style>
+                  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+                  
+                  * { 
+                      margin: 0; 
+                      padding: 0; 
+                      box-sizing: border-box; 
+                  }
+                  
+                  body { 
+                      background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+                      font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+                      color: #2d3748;
+                      height: 100vh;
+                      overflow: hidden;
+                  }
+                  
+                  .container {
+                      height: 100vh;
+                      display: flex;
+                      flex-direction: column;
+                      background: white;
+                      border-radius: 12px;
+                      margin: 8px;
+                      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+                      overflow: hidden;
+                  }
+                  
+                  .header {
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      color: white;
+                      padding: 16px 24px;
+                      display: flex;
+                      justify-content: space-between;
+                      align-items: center;
+                      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+                  }
+                  
+                  .header h1 {
+                      font-size: 20px;
+                      font-weight: 600;
+                      letter-spacing: -0.025em;
+                  }
+                  
+                  .main-content {
+                      flex-grow: 1;
+                      display: flex;
+                      background: #f8fafc;
+                  }
+                  
+                  .terminal-section {
+                      width: 66.66%;
+                      border-right: 1px solid #e2e8f0;
+                      background: white;
+                  }
+                  
+                  .terminal-frame {
+                      width: 100%;
+                      height: 100%;
+                      border: none;
+                      background: #1a202c;
+                      border-radius: 0 0 0 12px;
+                  }
+                  
+                  .sidebar {
+                      width: 33.33%;
+                      display: flex;
+                      flex-direction: column;
+                      background: #f8fafc;
+                      overflow-y: auto;
+                      padding: 20px;
+                      gap: 20px;
+                  }
+                  
+                  .section {
+                      background: white;
+                      border-radius: 8px;
+                      padding: 16px;
+                      box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+                      border: 1px solid #e2e8f0;
+                  }
+                  
+                  .section-title {
+                      font-weight: 600;
+                      margin-bottom: 12px;
+                      color: #2d3748;
+                      font-size: 14px;
+                      text-transform: uppercase;
+                      letter-spacing: 0.05em;
+                  }
+                  
+                  .file-browser {
+                      max-height: 200px;
+                      overflow-y: auto;
+                      background: #f7fafc;
+                      border: 1px solid #e2e8f0;
+                      border-radius: 6px;
+                      padding: 8px;
+                  }
+                  
+                  .file-item {
+                      padding: 8px 12px;
+                      cursor: pointer;
+                      border-radius: 4px;
+                      font-size: 13px;
+                      color: #4a5568;
+                      transition: all 0.15s ease;
+                      display: flex;
+                      align-items: center;
+                      gap: 8px;
+                  }
+                  
+                  .file-item:hover {
+                      background: #edf2f7;
+                      color: #2d3748;
+                      transform: translateX(2px);
+                  }
+                  
+                  .input {
+                      width: 100%;
+                      background: white;
+                      color: #2d3748;
+                      border: 1px solid #e2e8f0;
+                      border-radius: 6px;
+                      padding: 10px 12px;
+                      margin: 6px 0;
+                      font-size: 14px;
+                      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+                      font-family: 'Inter', sans-serif;
+                  }
+                  
+                  .input:focus {
+                      outline: none;
+                      border-color: #667eea;
+                      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+                  }
+                  
+                  .btn {
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      color: white;
+                      border: none;
+                      border-radius: 6px;
+                      padding: 10px 16px;
+                      cursor: pointer;
+                      margin: 4px 0;
+                      font-size: 13px;
+                      font-weight: 500;
+                      transition: all 0.15s ease;
+                      font-family: 'Inter', sans-serif;
+                      box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+                  }
+                  
+                  .btn:hover {
+                      transform: translateY(-1px);
+                      box-shadow: 0 4px 12px 0 rgba(102, 126, 234, 0.4);
+                  }
+                  
+                  .btn:active {
+                      transform: translateY(0);
+                  }
+                  
+                  .btn.secondary {
+                      background: #e2e8f0;
+                      color: #4a5568;
+                  }
+                  
+                  .btn.secondary:hover {
+                      background: #cbd5e0;
+                      box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.15);
+                  }
+                  
+                  .btn.remote-active {
+                      background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+                      animation: pulse-green 2s infinite;
+                  }
+                  
+                  .btn.remote-active:hover {
+                      box-shadow: 0 4px 12px 0 rgba(72, 187, 120, 0.4);
+                  }
+                  
+                  @keyframes pulse-green {
+                      0%, 100% { opacity: 1; }
+                      50% { opacity: 0.8; }
+                  }
+                  
+                  .remote-status-indicator {
+                      position: absolute;
+                      top: 16px;
+                      right: 16px;
+                      padding: 6px 12px;
+                      border-radius: 20px;
+                      font-size: 11px;
+                      font-weight: 600;
+                      text-transform: uppercase;
+                      letter-spacing: 0.5px;
+                      z-index: 10;
+                  }
+                  
+                  .remote-status-active {
+                      background: #c6f6d5;
+                      color: #22543d;
+                      border: 1px solid #9ae6b4;
+                  }
+                  
+                  .remote-status-inactive {
+                      background: #e2e8f0;
+                      color: #4a5568;
+                      border: 1px solid #cbd5e0;
+                  }
+                  
+                  .status-text {
+                      font-size: 12px;
+                      margin-top: 8px;
+                      padding: 8px 12px;
+                      border-radius: 4px;
+                      font-weight: 500;
+                  }
+                  
+                  .status-success {
+                      background: #c6f6d5;
+                      color: #22543d;
+                      border: 1px solid #9ae6b4;
+                  }
+                  
+                  .status-error {
+                      background: #fed7d7;
+                      color: #742a2a;
+                      border: 1px solid #fc8181;
+                  }
+                  
+                  .status-info {
+                      background: #bee3f8;
+                      color: #2a4365;
+                      border: 1px solid #90cdf4;
+                  }
+                  
+                  /* Scrollbar styling */
+                  ::-webkit-scrollbar {
+                      width: 6px;
+                  }
+                  
+                  ::-webkit-scrollbar-track {
+                      background: #f1f5f9;
+                  }
+                  
+                  ::-webkit-scrollbar-thumb {
+                      background: #cbd5e0;
+                      border-radius: 3px;
+                  }
+                  
+                  ::-webkit-scrollbar-thumb:hover {
+                      background: #a0aec0;
+                  }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <div class="header">
+                      <h1>🤖 AI Terminal</h1>
+                      <div style="display: flex; gap: 12px; align-items: center;">
+                          <button class="btn" id="remoteBtn" onclick="toggleRemote()">📡 Remote Mode</button>
+                          <button class="btn" onclick="refreshFiles()">🔄 Refresh</button>
+                      </div>
+                  </div>
+                  
+                  <div class="main-content">
+                      <div class="terminal-section" style="position: relative;">
+                          <div class="remote-status-indicator remote-status-inactive" id="remoteStatusIndicator">Remote: OFF</div>
+                          <iframe class="terminal-frame" id="terminalFrame"></iframe>
+                      </div>
+                      
+                      <div class="sidebar">
+                          <div class="section">
+                              <div class="section-title">File Browser</div>
+                              <div class="file-browser" id="fileBrowser">
+                                  <div style="text-align: center; padding: 20px; color: #718096;">Loading files...</div>
+                              </div>
+                          </div>
+                          
+                          <div class="section">
+                              <div class="section-title">Scheduled Commands</div>
+                              <textarea class="input" id="timedMessage" placeholder="Enter commands (one per line or separated by ;)" rows="3" style="font-family: 'Inter', monospace; resize: vertical; min-height: 60px;">ls -la --color</textarea>
+                              
+                              <div style="display: flex; gap: 6px; margin: 6px 0;">
+                                  <select class="input" id="scheduleType" onchange="toggleScheduleType()" style="width: 80px; font-size: 12px;">
+                                      <option value="delay">Delay</option>
+                                      <option value="time">At Time</option>
+                                      <option value="date">Date/Time</option>
+                                  </select>
+                                  <input type="text" class="input" id="scheduleInput" value="5m" placeholder="5m, 2:30, 9pm" style="flex: 1; font-size: 12px;">
+                              </div>
+                              
+                              <div id="dateTimeInputs" style="display: none; gap: 6px; margin: 6px 0;">
+                                  <input type="date" class="input" id="scheduleDate" style="flex: 1; font-size: 12px;">
+                                  <input type="time" class="input" id="scheduleTime" style="flex: 1; font-size: 12px;">
+                              </div>
+                              
+                              <button class="btn" onclick="scheduleMessage()" style="width: 100%;">📅 Add to Queue</button>
+                              <div style="display: flex; gap: 4px; margin-top: 4px;">
+                                  <button class="btn secondary" onclick="cancelNext()" style="flex: 1; font-size: 11px;">❌ Cancel Next</button>
+                                  <button class="btn secondary" onclick="clearAllScheduled()" style="flex: 1; font-size: 11px;">🗑️ Clear All</button>
+                              </div>
+                              <div id="scheduleStatus"></div>
+                              
+                              <div id="scheduledQueue" style="max-height: 120px; overflow-y: auto; margin-top: 8px; padding: 6px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 11px;">
+                                  <div style="color: #718096; text-align: center;">No scheduled commands</div>
+                              </div>
+                          </div>
+                          
+                          <div class="section">
+                              <div class="section-title">MQTT Configuration</div>
+                              <label style="font-size: 12px; color: #718096; margin-bottom: 4px; display: block;">Broker Address</label>
+                              <input type="text" class="input" id="mqttBroker" value="10.0.1.101:1883" placeholder="MQTT Broker" readonly style="background: #f7fafc;">
+                              <label style="font-size: 12px; color: #718096; margin-bottom: 4px; display: block;">Topic</label>
+                              <input type="text" class="input" id="mqttTopic" value="ai_terminal/comms" placeholder="MQTT Topic">
+                              <button class="btn" onclick="testMQTT()" style="width: 100%;">Test Connection</button>
+                              <button class="btn secondary" onclick="checkMQTTStatus()" style="width: 100%;">Status Check</button>
+                              <button class="btn secondary" onclick="testQA()" style="width: 100%;">Test Q&A Modal</button>
+                              <div id="mqttStatus"></div>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+              
+              <script>
+                  let currentPath = '';
+                  let scheduledTimeout = null;
+                  let countdownInterval = null;
+                  let remoteMode = false;
+                  let scheduledCommands = [];
+                  let commandQueue = [];
+                  let nextCommandId = 1;
+                  
+                  document.getElementById('terminalFrame').src = '/terminal';
+                  
+                  function loadFiles(path = '') {
+                      const url = path ? `/api/files?path=${encodeURIComponent(path)}` : '/api/files';
+                      fetch(url)
+                          .then(response => response.json())
+                          .then(data => {
+                              const browser = document.getElementById('fileBrowser');
+                              currentPath = data.current_path || '';
+                              
+                              const files = data.files || data;
+                              browser.innerHTML = files.map(file => `
+                                  <div class="file-item" onclick="handleFileClick('${file.path || file.name}', '${file.type}', '${file.name}')">
+                                      ${file.type === 'dir' ? '📁' : '📄'} ${file.name}
+                                  </div>
+                              `).join('');
+                          })
+                          .catch(error => {
+                              document.getElementById('fileBrowser').innerHTML = '<div style="color: red; padding: 10px;">Error loading files</div>';
+                          });
+                  }
+                  
+                  function handleFileClick(path, type, name) {
+                      if (type === 'dir') {
+                          loadFiles(path);
+                      }
+                  }
+                  
+                  function refreshFiles() {
+                      loadFiles(currentPath);
+                  }
+                  
+                  function toggleRemote() {
+                      remoteMode = !remoteMode;
+                      const btn = document.getElementById('remoteBtn');
+                      const indicator = document.getElementById('remoteStatusIndicator');
+                      
+                      if (remoteMode) {
+                          btn.classList.add('remote-active');
+                          btn.textContent = '📡 Remote: ON';
+                          indicator.textContent = 'Remote: ON';
+                          indicator.classList.remove('remote-status-inactive');
+                          indicator.classList.add('remote-status-active');
+                      } else {
+                          btn.classList.remove('remote-active');
+                          btn.textContent = '📡 Remote Mode';
+                          indicator.textContent = 'Remote: OFF';
+                          indicator.classList.remove('remote-status-active');
+                          indicator.classList.add('remote-status-inactive');
+                      }
+                  }
+                  
+                  function scheduleMessage() {
+                      const message = document.getElementById('timedMessage').value.trim();
+                      const scheduleType = document.getElementById('scheduleType').value;
+                      let scheduleInput = document.getElementById('scheduleInput').value.trim();
+                      
+                      if (!message) {
+                          alert('Please enter a message or command');
+                          return;
+                      }
+                      
+                      // Handle date/time input type
+                      if (scheduleType === 'date') {
+                          const dateInput = document.getElementById('scheduleDate').value;
+                          const timeInput = document.getElementById('scheduleTime').value;
+                          if (!dateInput || !timeInput) {
+                              alert('Please select both date and time');
+                              return;
+                          }
+                          scheduleInput = `${dateInput} ${timeInput}`;
+                      } else if (!scheduleInput) {
+                          alert('Please enter a schedule time');
+                          return;
+                      }
+                      
+                      let executeTime;
+                      try {
+                          executeTime = parseScheduleInput(scheduleInput, scheduleType);
+                      } catch (error) {
+                          alert(error.message);
+                          return;
+                      }
+                      
+                      const now = new Date().getTime();
+                      if (executeTime <= now) {
+                          alert('Schedule time must be in the future');
+                          return;
+                      }
+                      
+                      // Add to scheduled commands
+                      const command = {
+                          id: nextCommandId++,
+                          message: message,
+                          executeTime: executeTime,
+                          scheduleType: scheduleType,
+                          scheduleInput: scheduleInput
+                      };
+                      
+                      scheduledCommands.push(command);
+                      scheduledCommands.sort((a, b) => a.executeTime - b.executeTime);
+                      
+                      updateQueueDisplay();
+                      scheduleNextCommand();
+                      
+                      // Clear input
+                      document.getElementById('timedMessage').value = '';
+                  }
+                  
+                  function parseScheduleInput(input, type) {
+                      if (type === 'delay') {
+                          // Parse delay: 5m, 30s, 2h, or plain number (seconds)
+                          const match = input.match(/^(\d+)([smh]?)$/);
+                          if (!match) {
+                              throw new Error('Invalid delay format. Use: 5m, 30s, 2h, or 90');
+                          }
+                          
+                          const value = parseInt(match[1]);
+                          const unit = match[2] || 's';
+                          const now = new Date().getTime();
+                          let delayMs;
+                          
+                          switch (unit) {
+                              case 's': delayMs = value * 1000; break;
+                              case 'm': delayMs = value * 60 * 1000; break;
+                              case 'h': delayMs = value * 3600 * 1000; break;
+                              default: delayMs = value * 1000; break;
+                          }
+                          
+                          return now + delayMs;
+                      } else if (type === 'date') {
+                          // Parse date/time: "2024-01-15 14:30"
+                          const dateTime = new Date(input);
+                          if (isNaN(dateTime.getTime())) {
+                              throw new Error('Invalid date/time format');
+                          }
+                          return dateTime.getTime();
+                      } else {
+                          // Parse time: 9pm, 14:30, 2:15pm
+                          const now = new Date();
+                          let targetTime;
+                          
+                          if (input.includes('pm') || input.includes('am')) {
+                              // 12-hour format
+                              const match = input.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
+                              if (!match) {
+                                  throw new Error('Invalid time format. Use: 9pm, 2:15pm, 11am');
+                              }
+                              
+                              let hours = parseInt(match[1]);
+                              const minutes = parseInt(match[2] || '0');
+                              const period = match[3].toLowerCase();
+                              
+                              if (period === 'pm' && hours !== 12) hours += 12;
+                              if (period === 'am' && hours === 12) hours = 0;
+                              
+                              targetTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
+                          } else {
+                              // 24-hour format
+                              const match = input.match(/^(\d{1,2}):(\d{2})$/);
+                              if (!match) {
+                                  throw new Error('Invalid time format. Use: 14:30, 09:00');
+                              }
+                              
+                              const hours = parseInt(match[1]);
+                              const minutes = parseInt(match[2]);
+                              
+                              targetTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
+                          }
+                          
+                          // If time has passed today, schedule for tomorrow
+                          if (targetTime <= now) {
+                              targetTime.setDate(targetTime.getDate() + 1);
+                          }
+                          
+                          return targetTime.getTime();
+                      }
+                  }
+                  
+                  function scheduleNextCommand() {
+                      if (scheduledTimeout) {
+                          clearTimeout(scheduledTimeout);
+                          scheduledTimeout = null;
+                      }
+                      
+                      if (scheduledCommands.length === 0) {
+                          return;
+                      }
+                      
+                      const nextCommand = scheduledCommands[0];
+                      const now = new Date().getTime();
+                      const delay = nextCommand.executeTime - now;
+                      
+                      if (delay <= 0) {
+                          executeCommand(nextCommand);
+                      } else {
+                          scheduledTimeout = setTimeout(() => {
+                              executeCommand(nextCommand);
+                          }, delay);
+                      }
+                  }
+                  
+                  function executeCommand(command) {
+                      // Remove from scheduled commands
+                      scheduledCommands = scheduledCommands.filter(cmd => cmd.id !== command.id);
+                      
+                      // Split commands and send each one
+                      const commands = command.message.split(/[;\n]/).map(cmd => cmd.trim()).filter(cmd => cmd);
+                      
+                      commands.forEach((cmd, index) => {
+                          setTimeout(() => {
+                              fetch('/api/send-command', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ command: cmd })
+                              });
+                          }, index * 500); // 500ms delay between commands
+                      });
+                      
+                      updateQueueDisplay();
+                      scheduleNextCommand();
+                  }
+                  
+                  function updateQueueDisplay() {
+                      const queueDiv = document.getElementById('scheduledQueue');
+                      
+                      if (scheduledCommands.length === 0) {
+                          queueDiv.innerHTML = '<div style="color: #718096; text-align: center;">No scheduled commands</div>';
+                          return;
+                      }
+                      
+                      queueDiv.innerHTML = scheduledCommands.slice(0, 5).map(cmd => {
+                          const timeStr = new Date(cmd.executeTime).toLocaleString();
+                          const preview = cmd.message.length > 30 ? cmd.message.substring(0, 30) + '...' : cmd.message;
+                          return `<div style="margin: 2px 0; padding: 4px; background: white; border-radius: 3px; font-size: 10px;">
+                              <strong>${timeStr}</strong><br>
+                              ${preview}
+                          </div>`;
+                      }).join('');
+                      
+                      if (scheduledCommands.length > 5) {
+                          queueDiv.innerHTML += `<div style="text-align: center; color: #718096; margin-top: 4px;">...and ${scheduledCommands.length - 5} more</div>`;
+                      }
+                  }
+                  
+                  function cancelNext() {
+                      if (scheduledCommands.length > 0) {
+                          scheduledCommands.shift();
+                          if (scheduledTimeout) {
+                              clearTimeout(scheduledTimeout);
+                              scheduledTimeout = null;
+                          }
+                          updateQueueDisplay();
+                          scheduleNextCommand();
+                      }
+                  }
+                  
+                  function clearAllScheduled() {
+                      scheduledCommands = [];
+                      if (scheduledTimeout) {
+                          clearTimeout(scheduledTimeout);
+                          scheduledTimeout = null;
+                      }
+                      updateQueueDisplay();
+                  }
+                  
+                  function toggleScheduleType() {
+                      const scheduleType = document.getElementById('scheduleType').value;
+                      const dateTimeInputs = document.getElementById('dateTimeInputs');
+                      const scheduleInput = document.getElementById('scheduleInput');
+                      
+                      if (scheduleType === 'date') {
+                          dateTimeInputs.style.display = 'flex';
+                          scheduleInput.style.display = 'none';
+                      } else {
+                          dateTimeInputs.style.display = 'none';
+                          scheduleInput.style.display = 'block';
+                      }
+                  }
+                  
+                  function testMQTT() {
+                      fetch('/api/test-mqtt', { method: 'POST' })
+                          .then(response => response.json())
+                          .then(data => {
+                              document.getElementById('mqttStatus').innerHTML = 
+                                  `<div class="status-text ${data.status === 'connected' ? 'status-success' : 'status-error'}">
+                                      MQTT: ${data.status}
+                                  </div>`;
+                          });
+                  }
+                  
+                  function checkMQTTStatus() {
+                      fetch('/api/mqtt-status')
+                          .then(response => response.json())
+                          .then(data => {
+                              document.getElementById('mqttStatus').innerHTML = 
+                                  `<div class="status-text status-info">
+                                      Broker: ${data.broker}:${data.port}<br>
+                                      Status: ${data.connected ? 'Connected' : 'Disconnected'}
+                                  </div>`;
+                          });
+                  }
+                  
+                  function testQA() {
+                      // Placeholder for Q&A modal functionality
+                      alert('Q&A Modal test functionality');
+                  }
+                  
+                  // Initialize interface
+                  loadFiles();
+                  updateQueueDisplay();
+                  
+                  // Set initial default time to next hour
+                  const now = new Date();
+                  const nextHour = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0);
+                  let hour = nextHour.getHours();
+                  const ampm = hour >= 12 ? 'pm' : 'am';
+                  if (hour > 12) hour -= 12;
+                  if (hour === 0) hour = 12;
+                  document.getElementById('scheduleInput').value = `${hour}${ampm}`;
+                  
+                  // Auto-update queue display every second
+                  setInterval(updateQueueDisplay, 1000);
+              </script>
+          </body>
+          </html>'''
+                  
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'text/html')
+                  self.end_headers()
+                  self.wfile.write(html.encode())
+          
+          # Start the server
+          if __name__ == "__main__":
+              port = 8080
+              print(f"Starting AI Terminal server on port {port}")
+              
+              try:
+                  with socketserver.TCPServer(("", port), FileHandler) as httpd:
+                      print(f"AI Terminal ready at http://localhost:{port}")
+                      httpd.serve_forever()
+              except Exception as e:
+                  print(f"Error starting server: {e}")
+                  exit(1)
+          EOF
+          
+          echo "AI Terminal ready!"
+          echo "Web UI: port 8080"
+          echo "Terminal: port 7681"
+          echo "Colors: ENABLED"
+          
+          # EXECUTE THE PYTHON SERVER - this was missing!
+          cd /mnt/k8s-tmux
+          python3 /tmp/server.py
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        env:
+        - name: TERM
+          value: "xterm-256color"
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: wiredquill-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/WiredQuill
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-service
+  namespace: k8s-tmux
+spec:
+  selector:
+    app: k8s-tmux
+  ports:
+  - name: web-ui
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+  - name: terminal
+    protocol: TCP
+    port: 7681
+    targetPort: 7681
+  type: LoadBalancer

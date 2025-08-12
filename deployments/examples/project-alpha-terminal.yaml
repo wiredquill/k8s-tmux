@@ -1,0 +1,58 @@
+# Example deployment for Project Alpha
+# Copy this file and customize SESSION_NAME and SESSION_COLOR for your project
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-tmux
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux-alpha  # Change this for each project
+  namespace: k8s-tmux
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux-alpha  # Change this for each project
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux-alpha  # Change this for each project
+    spec:
+      containers:
+      - name: k8s-tmux
+        image: ghcr.io/wiredquill/k8s-tmux:latest
+        ports:
+        - containerPort: 7681
+        - containerPort: 8080
+        env:
+        - name: TERM
+          value: "xterm-256color"
+        - name: SESSION_NAME
+          value: "🚀 Project Alpha"  # 🎯 CUSTOMIZE THIS
+        - name: SESSION_COLOR
+          value: "#48bb78"          # 🎯 CUSTOMIZE THIS (Green theme)
+        command: ["/bin/bash"]
+        args: ["{{ SAME_STARTUP_SCRIPT_AS_MAIN_DEPLOYMENT }}"]
+        # ... rest same as customizable-terminal.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-alpha-service  # Change this for each project
+  namespace: k8s-tmux
+spec:
+  selector:
+    app: k8s-tmux-alpha  # Change this for each project
+  ports:
+  - name: web-ui
+    protocol: TCP
+    port: 8080    # 🎯 CHANGE PORT for different projects (8080, 8081, 8082, etc.)
+    targetPort: 8080
+  - name: terminal
+    protocol: TCP
+    port: 7681
+    targetPort: 7681
+  type: LoadBalancer

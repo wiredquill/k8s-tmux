@@ -1,0 +1,950 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-tmux
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux
+  namespace: k8s-tmux
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux
+    spec:
+      containers:
+      - name: k8s-tmux
+        image: ghcr.io/wiredquill/k8s-tmux:latest
+        ports:
+        - containerPort: 7681
+        - containerPort: 8080
+        env:
+        - name: TERM
+          value: "xterm-256color"
+        - name: SESSION_NAME
+          value: "AI Terminal"
+        - name: SESSION_COLOR
+          value: "#667eea"
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - |
+          mkdir -p /mnt/k8s-tmux/uploads
+          chmod 755 /mnt/k8s-tmux/uploads
+          
+          # Install MQTT client tools - try multiple approaches
+          echo "Installing MQTT client tools..."
+          zypper refresh && zypper install -y mosquitto-clients 2>/dev/null || \
+          apt-get update && apt-get install -y mosquitto-clients 2>/dev/null || \
+          yum install -y mosquitto-clients 2>/dev/null || \
+          echo "MQTT client install failed, will use fallback method"
+          
+          export TERM=xterm-256color
+          export COLORTERM=truecolor
+          export FORCE_COLOR=1
+          export CLICOLOR_FORCE=1
+          
+          cd /mnt/k8s-tmux
+          tmux new-session -d -s main -c /mnt/k8s-tmux bash
+          tmux send-keys -t main 'export TERM=xterm-256color' Enter
+          tmux send-keys -t main 'clear' Enter
+          
+          echo "Starting ttyd..."
+          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color tmux attach-session -t main > /tmp/ttyd.log 2>&1 &
+          TTYD_PID=$!
+          
+          sleep 3
+          if ps -p $TTYD_PID > /dev/null; then
+            echo "ttyd started successfully (PID: $TTYD_PID)"
+          else
+            echo "ERROR: ttyd failed to start"
+          fi
+          
+          # Create COMPLETE Python server with file upload
+          cat > /tmp/server.py << 'PYEOF'
+          #!/usr/bin/env python3
+          import http.server
+          import socketserver
+          import urllib.parse
+          import json
+          import os
+          import subprocess
+          import time
+          import socket
+          import struct
+          import cgi
+          import shutil
+          from io import BytesIO
+          
+          class FileHandler(http.server.SimpleHTTPRequestHandler):
+              def do_GET(self):
+                  print(f"GET request: {self.path}")
+                  if self.path == '/':
+                      self.send_ui()
+                  elif self.path.startswith('/api/files'):
+                      self.send_file_list()
+                  elif self.path.startswith('/api/download'):
+                      self.handle_download()
+                  elif self.path == '/terminal':
+                      self.redirect_to_ttyd()
+                  else:
+                      super().do_GET()
+              
+              def do_POST(self):
+                  print(f"POST request: {self.path}")
+                  if self.path == '/api/send-command':
+                      self.handle_send_command()
+                  elif self.path == '/api/test-mqtt':
+                      self.handle_test_mqtt()
+                  elif self.path == '/api/schedule-command':
+                      self.handle_schedule_command()
+                  elif self.path == '/api/upload':
+                      self.handle_file_upload()
+                  else:
+                      self.send_error(404)
+              
+              def redirect_to_ttyd(self):
+                  host = self.headers.get('Host', 'localhost').split(':')[0]
+                  self.send_response(302)
+                  self.send_header('Location', f'http://{host}:7681')
+                  self.end_headers()
+              
+              def handle_file_upload(self):
+                  try:
+                      print("Processing file upload...")
+                      content_type = self.headers.get('Content-Type', '')
+                      
+                      if 'multipart/form-data' in content_type:
+                          # Parse multipart form data
+                          form = cgi.FieldStorage(
+                              fp=self.rfile,
+                              headers=self.headers,
+                              environ={'REQUEST_METHOD': 'POST'}
+                          )
+                          
+                          if 'file' not in form:
+                              self.send_error(400, "No file uploaded")
+                              return
+                          
+                          file_item = form['file']
+                          if not file_item.filename:
+                              self.send_error(400, "No file selected")
+                              return
+                          
+                          # Save file to uploads directory
+                          upload_dir = '/mnt/k8s-tmux/uploads'
+                          os.makedirs(upload_dir, exist_ok=True)
+                          
+                          filename = file_item.filename
+                          filepath = os.path.join(upload_dir, filename)
+                          
+                          # Write file
+                          with open(filepath, 'wb') as f:
+                              shutil.copyfileobj(file_item.file, f)
+                          
+                          print(f"File uploaded: {filename} ({os.path.getsize(filepath)} bytes)")
+                          
+                          response = {
+                              "status": "success", 
+                              "message": f"File '{filename}' uploaded successfully",
+                              "filename": filename,
+                              "size": os.path.getsize(filepath)
+                          }
+                      else:
+                          self.send_error(400, "Invalid content type")
+                          return
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps(response).encode())
+                      
+                  except Exception as e:
+                      print(f"Error in file upload: {e}")
+                      import traceback
+                      traceback.print_exc()
+                      self.send_error(500, f"Upload error: {e}")
+              
+              def handle_send_command(self):
+                  try:
+                      content_length = int(self.headers.get('Content-Length', 0))
+                      post_data = self.rfile.read(content_length)
+                      data = json.loads(post_data.decode('utf-8'))
+                      
+                      command = data.get('command', '')
+                      if not command:
+                          self.send_error(400, "No command provided")
+                          return
+                      
+                      print(f"Sending command to tmux: {command}")
+                      result = subprocess.run(['tmux', 'send-keys', '-t', 'main', command, 'Enter'])
+                      
+                      response = {"status": "success", "message": "Command sent"}
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps(response).encode())
+                      
+                  except Exception as e:
+                      print(f"Error in send_command: {e}")
+                      self.send_error(500, f"Command error: {e}")
+              
+              def handle_test_mqtt(self):
+                  try:
+                      print("Testing MQTT connection...")
+                      
+                      # Try mosquitto_pub first
+                      try:
+                          result = subprocess.run([
+                              'mosquitto_pub', '-h', '10.0.1.101', '-p', '1883',
+                              '-t', 'ai_terminal/comms', '-m', 'Test message from AI Terminal'
+                          ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+                          
+                          if result.returncode == 0:
+                              response = {"status": "success", "message": "MQTT test message sent via mosquitto_pub"}
+                          else:
+                              raise Exception("mosquitto_pub failed")
+                      
+                      except:
+                          # Fallback: try raw MQTT connection
+                          print("mosquitto_pub not available, trying raw MQTT...")
+                          
+                          # Simple MQTT publish using raw socket
+                          sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                          sock.settimeout(5)
+                          sock.connect(('10.0.1.101', 1883))
+                          
+                          # MQTT CONNECT packet
+                          client_id = f"ai_terminal_{int(time.time())}"
+                          client_id_bytes = client_id.encode('utf-8')
+                          
+                          connect_packet = bytearray()
+                          connect_packet.append(0x10)  # CONNECT
+                          
+                          variable_header = bytearray()
+                          variable_header.extend([0x00, 0x04])  # Protocol name length
+                          variable_header.extend(b'MQTT')       # Protocol name
+                          variable_header.append(0x04)         # Protocol level
+                          variable_header.append(0x02)         # Clean session
+                          variable_header.extend([0x00, 0x3c]) # Keep alive
+                          
+                          payload = bytearray()
+                          payload.extend(len(client_id_bytes).to_bytes(2, 'big'))
+                          payload.extend(client_id_bytes)
+                          
+                          remaining_length = len(variable_header) + len(payload)
+                          connect_packet.append(remaining_length)
+                          connect_packet.extend(variable_header)
+                          connect_packet.extend(payload)
+                          
+                          sock.send(connect_packet)
+                          response_data = sock.recv(4)
+                          
+                          if len(response_data) >= 4 and response_data[0] == 0x20 and response_data[3] == 0x00:
+                              # Send PUBLISH
+                              topic = 'ai_terminal/comms'
+                              message = 'Test message from AI Terminal (raw MQTT)'
+                              
+                              topic_bytes = topic.encode('utf-8')
+                              message_bytes = message.encode('utf-8')
+                              
+                              publish_packet = bytearray()
+                              publish_packet.append(0x30)  # PUBLISH
+                              remaining_length = 2 + len(topic_bytes) + len(message_bytes)
+                              publish_packet.append(remaining_length)
+                              publish_packet.extend(len(topic_bytes).to_bytes(2, 'big'))
+                              publish_packet.extend(topic_bytes)
+                              publish_packet.extend(message_bytes)
+                              
+                              sock.send(publish_packet)
+                              sock.close()
+                              
+                              response = {"status": "success", "message": "MQTT test message sent via raw socket"}
+                          else:
+                              raise Exception("MQTT connection failed")
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps(response).encode())
+                      
+                  except Exception as e:
+                      print(f"Error in MQTT test: {e}")
+                      response = {"status": "error", "message": f"MQTT error: {str(e)}"}
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps(response).encode())
+              
+              def handle_schedule_command(self):
+                  try:
+                      content_length = int(self.headers.get('Content-Length', 0))
+                      post_data = self.rfile.read(content_length)
+                      data = json.loads(post_data.decode('utf-8'))
+                      
+                      command = data.get('command', '')
+                      schedule_type = data.get('type', 'delay')
+                      schedule_value = data.get('value', '5m')
+                      
+                      if not command:
+                          self.send_error(400, "No command provided")
+                          return
+                      
+                      # Parse schedule value based on type
+                      if schedule_type == 'delay':
+                          # Handle delay format: 5m, 30s, 2h
+                          if schedule_value.endswith('s'):
+                              delay_seconds = int(schedule_value[:-1])
+                          elif schedule_value.endswith('m'):
+                              delay_seconds = int(schedule_value[:-1]) * 60
+                          elif schedule_value.endswith('h'):
+                              delay_seconds = int(schedule_value[:-1]) * 3600
+                          else:
+                              delay_seconds = int(schedule_value) * 60  # Default to minutes
+                      else:
+                          # Handle time format: 9pm, 2:30pm, 14:30
+                          delay_seconds = self.parse_time_to_delay(schedule_value)
+                      
+                      print(f"Scheduling command: {command} in {delay_seconds} seconds")
+                      
+                      # Create schedule script
+                      schedule_script = f'''#!/bin/bash
+          sleep {delay_seconds}
+          tmux send-keys -t main '{command}' Enter
+          '''
+                      
+                      with open('/tmp/scheduled_cmd.sh', 'w') as f:
+                          f.write(schedule_script)
+                      os.chmod('/tmp/scheduled_cmd.sh', 0o755)
+                      
+                      # Run in background
+                      subprocess.Popen(['/bin/bash', '/tmp/scheduled_cmd.sh'])
+                      
+                      if schedule_type == 'delay':
+                          message = f"Command scheduled for {schedule_value}"
+                      else:
+                          message = f"Command scheduled for {schedule_value}"
+                      
+                      response = {"status": "success", "message": message}
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps(response).encode())
+                      
+                  except Exception as e:
+                      print(f"Error scheduling command: {e}")
+                      self.send_error(500, f"Schedule error: {e}")
+              
+              def parse_time_to_delay(self, time_str):
+                  """Parse time strings like '9pm', '2:30pm', '14:30' into seconds from now"""
+                  import datetime
+                  now = datetime.datetime.now()
+                  
+                  if 'pm' in time_str.lower() or 'am' in time_str.lower():
+                      # 12-hour format
+                      time_str = time_str.lower()
+                      is_pm = 'pm' in time_str
+                      time_part = time_str.replace('pm', '').replace('am', '').strip()
+                      
+                      if ':' in time_part:
+                          hour, minute = map(int, time_part.split(':'))
+                      else:
+                          hour = int(time_part)
+                          minute = 0
+                      
+                      if is_pm and hour != 12:
+                          hour += 12
+                      elif not is_pm and hour == 12:
+                          hour = 0
+                  else:
+                      # 24-hour format
+                      if ':' in time_str:
+                          hour, minute = map(int, time_str.split(':'))
+                      else:
+                          hour = int(time_str)
+                          minute = 0
+                  
+                  target_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                  
+                  # If time has passed today, schedule for tomorrow
+                  if target_time <= now:
+                      target_time += datetime.timedelta(days=1)
+                  
+                  delta = target_time - now
+                  return int(delta.total_seconds())
+              
+              def handle_download(self):
+                  try:
+                      print("Processing /api/download request")
+                      query = urllib.parse.urlparse(self.path).query
+                      params = urllib.parse.parse_qs(query)
+                      file_path = params.get('path', [''])[0]
+                      
+                      if not file_path:
+                          self.send_error(400, "No file path provided")
+                          return
+                      
+                      # Security: ensure path is within /mnt
+                      base_dir = '/mnt'
+                      full_path = os.path.join(base_dir, file_path)
+                      full_path = os.path.abspath(full_path)
+                      
+                      if not full_path.startswith(base_dir):
+                          self.send_error(403, "Access denied")
+                          return
+                      
+                      if not os.path.exists(full_path) or os.path.isdir(full_path):
+                          self.send_error(404, "File not found or is directory")
+                          return
+                      
+                      file_size = os.path.getsize(full_path)
+                      filename = os.path.basename(full_path)
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/octet-stream')
+                      self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+                      self.send_header('Content-Length', str(file_size))
+                      self.end_headers()
+                      
+                      with open(full_path, 'rb') as f:
+                          while True:
+                              chunk = f.read(8192)
+                              if not chunk:
+                                  break
+                              self.wfile.write(chunk)
+                      
+                      print(f"Downloaded: {filename} ({file_size} bytes)")
+                      
+                  except Exception as e:
+                      print(f"Error in download: {e}")
+                      import traceback
+                      traceback.print_exc()
+                      self.send_error(500, f"Download error: {e}")
+              
+              def send_file_list(self):
+                  try:
+                      print("Processing /api/files request")
+                      query = urllib.parse.urlparse(self.path).query
+                      params = urllib.parse.parse_qs(query)
+                      path_param = params.get('path', [''])[0]
+                      
+                      base_dir = '/mnt'
+                      full_path = os.path.join(base_dir, path_param) if path_param else base_dir
+                      
+                      if not os.path.exists(full_path):
+                          print(f"Path not found: {full_path}")
+                          self.send_error(404, "Path not found")
+                          return
+                      
+                      files = []
+                      # Add parent directory link if not at root
+                      if path_param and path_param != '':
+                          parent_path = os.path.dirname(path_param)
+                          files.append({"name": "..", "type": "dir", "path": parent_path, "size": 0})
+                      
+                      for item in os.listdir(full_path):
+                          item_path = os.path.join(full_path, item)
+                          relative_path = os.path.relpath(item_path, base_dir)
+                          
+                          if os.path.isdir(item_path):
+                              files.append({"name": item, "type": "dir", "path": relative_path, "size": 0})
+                          else:
+                              try:
+                                  size = os.path.getsize(item_path)
+                              except:
+                                  size = 0
+                              files.append({"name": item, "type": "file", "path": relative_path, "size": size})
+                      
+                      files.sort(key=lambda x: (x['name'] != '..', x['type'] != 'dir', x['name'].lower()))
+                      response_data = {"files": files, "current_path": path_param}
+                      
+                      json_response = json.dumps(response_data)
+                      print(f"Sending file list response: {len(files)} files for path: {path_param}")
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                      self.send_header('Access-Control-Allow-Origin', '*')
+                      self.end_headers()
+                      self.wfile.write(json_response.encode())
+                      
+                  except Exception as e:
+                      print(f"Error in send_file_list: {e}")
+                      import traceback
+                      traceback.print_exc()
+                      self.send_error(500, f"Server error: {e}")
+              
+              def send_ui(self):
+                  session_name = os.environ.get('SESSION_NAME', 'AI Terminal')
+                  session_color = os.environ.get('SESSION_COLOR', '#667eea')
+                  
+                  html = f'''<!DOCTYPE html>
+          <html>
+          <head>
+              <title>{session_name}</title>
+              <meta charset="UTF-8">
+              <style>
+                  :root {{
+                      --primary-color: {session_color};
+                      --primary-color-dark: {session_color}dd;
+                  }}
+                  body {{ font-family: Inter, Arial, sans-serif; margin: 0; background: #f5f7fa; }}
+                  .container {{ height: 100vh; display: flex; flex-direction: column; background: white; margin: 8px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }}
+                  .header {{ background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-color-dark) 100%); color: white; padding: 16px; display: flex; justify-content: space-between; align-items: center; border-radius: 12px 12px 0 0; }}
+                  .header h1 {{ margin: 0; font-size: 20px; }}
+                  .main-content {{ flex: 1; display: flex; }}
+                  .terminal-section {{ width: 70%; position: relative; }}
+                  .sidebar {{ width: 30%; padding: 20px; background: #f8fafc; overflow-y: auto; }}
+                  .section {{ background: white; border-radius: 8px; padding: 16px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                  .section-title {{ font-weight: 600; margin-bottom: 12px; color: #2d3748; font-size: 14px; text-transform: uppercase; }}
+                  .file-browser {{ max-height: 200px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px; background: #f7fafc; }}
+                  .file-item {{ padding: 8px 12px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 8px; transition: all 0.15s ease; }}
+                  .file-item:hover {{ background: #edf2f7; transform: translateX(2px); }}
+                  .terminal-frame {{ width: 100%; height: 100%; border: none; }}
+                  .btn {{ background: var(--primary-color); color: white; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; margin: 4px 2px; font-size: 13px; font-weight: 500; transition: all 0.15s ease; }}
+                  .btn:hover {{ background: var(--primary-color-dark); transform: translateY(-1px); }}
+                  .btn.secondary {{ background: #e2e8f0; color: #4a5568; }}
+                  .input {{ width: 100%; padding: 10px 12px; margin: 6px 0; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 14px; }}
+                  .input:focus {{ outline: none; border-color: var(--primary-color); box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); }}
+                  .debug {{ font-size: 11px; background: #f0f0f0; padding: 8px; border-radius: 4px; margin-top: 8px; color: #666; }}
+                  
+                  /* File Upload Styles */
+                  .upload-area {{ border: 2px dashed #e2e8f0; border-radius: 8px; padding: 20px; text-align: center; margin: 10px 0; transition: all 0.3s ease; background: #fafafa; }}
+                  .upload-area.dragover {{ border-color: var(--primary-color); background: rgba(102, 126, 234, 0.1); }}
+                  .upload-area:hover {{ border-color: #cbd5e0; }}
+                  .file-input {{ display: none; }}
+                  
+                  /* Drop Zone Overlay */
+                  .drop-overlay {{ position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(102, 126, 234, 0.9); color: white; display: none; align-items: center; justify-content: center; font-size: 24px; z-index: 1000; }}
+                  .drop-overlay.show {{ display: flex; }}
+              </style>
+          </head>
+          <body>
+              <div class="drop-overlay" id="dropOverlay">
+                  <div>📁 Drop files here to upload</div>
+              </div>
+              
+              <div class="container">
+                  <div class="header">
+                      <h1 id="sessionTitle">🤖 {session_name}</h1>
+                      <div>
+                          <button class="btn" onclick="refreshFiles()">🔄 Refresh</button>
+                          <button class="btn" onclick="testAPI()">🔧 Test API</button>
+                      </div>
+                  </div>
+                  
+                  <div class="main-content">
+                      <div class="terminal-section">
+                          <iframe class="terminal-frame" id="terminalFrame"></iframe>
+                      </div>
+                      
+                      <div class="sidebar">
+                          <div class="section">
+                              <div class="section-title">File Browser</div>
+                              <div class="file-browser" id="fileBrowser">
+                                  <div style="text-align: center; padding: 20px; color: #718096;">Loading files...</div>
+                              </div>
+                              <div class="debug" id="debugInfo">Debug info...</div>
+                          </div>
+                          
+                          <div class="section">
+                              <div class="section-title">File Upload</div>
+                              <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+                                  <div>📤 Click or drag files here to upload</div>
+                                  <div style="font-size: 12px; color: #666; margin-top: 5px;">Files will be uploaded to /uploads directory</div>
+                              </div>
+                              <input type="file" id="fileInput" class="file-input" multiple onchange="uploadFiles(this.files)">
+                              <div id="uploadStatus" class="debug" style="display: none;"></div>
+                          </div>
+                          
+                          <div class="section">
+                              <div class="section-title">Scheduled Commands</div>
+                              <textarea class="input" id="commandText" rows="3" placeholder="Enter commands (one per line)">ls -la --color</textarea>
+                              
+                              <div style="display: flex; gap: 6px; margin: 6px 0;">
+                                  <select class="input" id="scheduleType" onchange="toggleScheduleInputs()" style="width: 80px; font-size: 12px;">
+                                      <option value="delay">Delay</option>
+                                      <option value="time">At Time</option>
+                                  </select>
+                                  <input type="text" class="input" id="scheduleValue" value="5m" placeholder="5m, 2:30, 9pm" style="flex: 1; font-size: 12px;">
+                              </div>
+                              
+                              <button class="btn" onclick="scheduleCommand()" style="width: 100%;">📅 Add to Queue</button>
+                              <div id="scheduleStatus" class="debug" style="display: none;"></div>
+                          </div>
+                          
+                          <div class="section">
+                              <div class="section-title">MQTT Configuration</div>
+                              <input type="text" class="input" value="10.0.1.101:1883" readonly style="background: #f7fafc;">
+                              <input type="text" class="input" value="ai_terminal/comms" placeholder="Topic">
+                              <button class="btn" onclick="testMQTT()" style="width: 100%;">Test Connection</button>
+                              <div id="mqttStatus" class="debug" style="display: none;"></div>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+              
+              <script>
+                  let currentPath = '';
+                  let debugEl = document.getElementById('debugInfo');
+                  let dragCounter = 0;
+                  
+                  function log(msg) {{
+                      console.log(msg);
+                      debugEl.textContent = new Date().toLocaleTimeString() + ': ' + msg;
+                  }}
+                  
+                  // File Upload Functions
+                  function uploadFiles(files) {{
+                      if (!files || files.length === 0) return;
+                      
+                      const statusEl = document.getElementById('uploadStatus');
+                      statusEl.style.display = 'block';
+                      statusEl.textContent = `Uploading ${{files.length}} file(s)...`;
+                      statusEl.style.backgroundColor = '#bee3f8';
+                      
+                      Array.from(files).forEach((file, index) => {{
+                          const formData = new FormData();
+                          formData.append('file', file);
+                          
+                          fetch('/api/upload', {{
+                              method: 'POST',
+                              body: formData
+                          }})
+                          .then(response => response.json())
+                          .then(data => {{
+                              if (data.status === 'success') {{
+                                  statusEl.textContent = `✅ Uploaded: ${{data.filename}} (${{Math.round(data.size/1024)}}KB)`;
+                                  statusEl.style.backgroundColor = '#c6f6d5';
+                                  log('File uploaded: ' + data.filename);
+                              }} else {{
+                                  statusEl.textContent = `❌ Upload failed: ${{data.message}}`;
+                                  statusEl.style.backgroundColor = '#fed7d7';
+                              }}
+                          }})
+                          .catch(error => {{
+                              statusEl.textContent = `❌ Upload error: ${{error.message}}`;
+                              statusEl.style.backgroundColor = '#fed7d7';
+                              log('Upload error: ' + error.message);
+                          }});
+                      }});
+                  }}
+                  
+                  // Drag and Drop Event Handlers
+                  document.addEventListener('dragenter', function(e) {{
+                      e.preventDefault();
+                      dragCounter++;
+                      document.getElementById('dropOverlay').classList.add('show');
+                  }});
+                  
+                  document.addEventListener('dragleave', function(e) {{
+                      e.preventDefault();
+                      dragCounter--;
+                      if (dragCounter === 0) {{
+                          document.getElementById('dropOverlay').classList.remove('show');
+                      }}
+                  }});
+                  
+                  document.addEventListener('dragover', function(e) {{
+                      e.preventDefault();
+                  }});
+                  
+                  document.addEventListener('drop', function(e) {{
+                      e.preventDefault();
+                      dragCounter = 0;
+                      document.getElementById('dropOverlay').classList.remove('show');
+                      
+                      const files = e.dataTransfer.files;
+                      if (files.length > 0) {{
+                          uploadFiles(files);
+                      }}
+                  }});
+                  
+                  // Upload area specific handlers
+                  const uploadArea = document.getElementById('uploadArea');
+                  uploadArea.addEventListener('dragover', function(e) {{
+                      e.preventDefault();
+                      e.stopPropagation();
+                      uploadArea.classList.add('dragover');
+                  }});
+                  
+                  uploadArea.addEventListener('dragleave', function(e) {{
+                      e.preventDefault();
+                      e.stopPropagation();
+                      uploadArea.classList.remove('dragover');
+                  }});
+                  
+                  uploadArea.addEventListener('drop', function(e) {{
+                      e.preventDefault();
+                      e.stopPropagation();
+                      uploadArea.classList.remove('dragover');
+                      
+                      const files = e.dataTransfer.files;
+                      if (files.length > 0) {{
+                          uploadFiles(files);
+                      }}
+                  }});
+                  
+                  function loadFiles(path = '') {{
+                      log('Loading files for path: "' + path + '"');
+                      
+                      const url = path ? `/api/files?path=${{encodeURIComponent(path)}}&t=${{Date.now()}}` : `/api/files?t=${{Date.now()}}`;
+                      
+                      fetch(url, {{
+                          method: 'GET',
+                          headers: {{
+                              'Accept': 'application/json',
+                              'Cache-Control': 'no-cache'
+                          }}
+                      }})
+                      .then(response => {{
+                          log('Response status: ' + response.status);
+                          if (!response.ok) {{
+                              throw new Error('HTTP ' + response.status + ': ' + response.statusText);
+                          }}
+                          return response.json();
+                      }})
+                      .then(data => {{
+                          log('Files received: ' + (data.files ? data.files.length : 0));
+                          currentPath = data.current_path || '';
+                          
+                          const browser = document.getElementById('fileBrowser');
+                          const files = data.files || [];
+                          
+                          if (files.length === 0) {{
+                              browser.innerHTML = '<div style="padding: 20px; text-align: center; color: #718096;">No files found</div>';
+                          }} else {{
+                              browser.innerHTML = files.map(file => 
+                                  `<div class="file-item" style="display: flex; justify-content: space-between; align-items: center;">
+                                      <div onclick="handleFileClick('${{file.path}}', '${{file.type}}', '${{file.name}}')" style="flex: 1; display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                          ${{file.type === 'dir' ? '📁' : '📄'}} ${{file.name}}
+                                          ${{file.type === 'file' ? '<span style="color: #718096; font-size: 10px; margin-left: 8px;">(' + formatFileSize(file.size) + ')</span>' : ''}}
+                                      </div>
+                                      ${{file.type === 'file' && file.name !== '..' ? '<button class="btn" style="padding: 4px 8px; font-size: 10px; margin: 0;" onclick="downloadFile(\'' + file.path + '\', \'' + file.name + '\'); event.stopPropagation();">⬇️</button>' : ''}}
+                                  </div>`
+                              ).join('');
+                          }}
+                          
+                          log('File browser updated successfully');
+                      }})
+                      .catch(error => {{
+                          log('Error: ' + error.message);
+                          document.getElementById('fileBrowser').innerHTML = 
+                              '<div style="color: red; padding: 10px;">Error: ' + error.message + '</div>';
+                      }});
+                  }}
+                  
+                  function formatFileSize(bytes) {{
+                      if (bytes === 0) return '0 B';
+                      const k = 1024;
+                      const sizes = ['B', 'KB', 'MB', 'GB'];
+                      const i = Math.floor(Math.log(bytes) / Math.log(k));
+                      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+                  }}
+                  
+                  function handleFileClick(path, type, name) {{
+                      log('Clicked: ' + name + ' (type: ' + type + ', path: ' + path + ')');
+                      if (type === 'dir') {{
+                          log('Navigating to directory: ' + path);
+                          loadFiles(path);
+                      }} else {{
+                          log('File clicked: ' + name);
+                      }}
+                  }}
+                  
+                  function downloadFile(filePath, fileName) {{
+                      log('Downloading file: ' + fileName);
+                      const url = '/api/download?path=' + encodeURIComponent(filePath);
+                      const link = document.createElement('a');
+                      link.href = url;
+                      link.download = fileName;
+                      document.body.appendChild(link);
+                      link.click();
+                      document.body.removeChild(link);
+                      log('Download initiated for: ' + fileName);
+                  }}
+                  
+                  function scheduleCommand() {{
+                      const command = document.getElementById('commandText').value.trim();
+                      const scheduleType = document.getElementById('scheduleType').value;
+                      const scheduleValue = document.getElementById('scheduleValue').value.trim();
+                      
+                      if (!command) {{
+                          alert('Please enter a command');
+                          return;
+                      }}
+                      
+                      if (!scheduleValue) {{
+                          alert('Please enter a schedule time');
+                          return;
+                      }}
+                      
+                      log(`Scheduling command: "${{command}}" as ${{scheduleType}}: ${{scheduleValue}}`);
+                      
+                      fetch('/api/schedule-command', {{
+                          method: 'POST',
+                          headers: {{ 'Content-Type': 'application/json' }},
+                          body: JSON.stringify({{ 
+                              command: command, 
+                              type: scheduleType, 
+                              value: scheduleValue 
+                          }})
+                      }})
+                      .then(response => response.json())
+                      .then(data => {{
+                          const statusEl = document.getElementById('scheduleStatus');
+                          statusEl.textContent = data.message;
+                          statusEl.style.display = 'block';
+                          statusEl.style.backgroundColor = data.status === 'success' ? '#c6f6d5' : '#fed7d7';
+                          log('Schedule result: ' + data.message);
+                      }})
+                      .catch(error => {{
+                          log('Schedule error: ' + error.message);
+                          alert('Schedule error: ' + error.message);
+                      }});
+                  }}
+                  
+                  function testMQTT() {{
+                      log('Testing MQTT connection...');
+                      
+                      fetch('/api/test-mqtt', {{ method: 'POST' }})
+                      .then(response => response.json())
+                      .then(data => {{
+                          const statusEl = document.getElementById('mqttStatus');
+                          statusEl.textContent = data.message;
+                          statusEl.style.display = 'block';
+                          statusEl.style.backgroundColor = data.status === 'success' ? '#c6f6d5' : '#fed7d7';
+                          log('MQTT test result: ' + data.message);
+                      }})
+                      .catch(error => {{
+                          log('MQTT test error: ' + error.message);
+                      }});
+                  }}
+                  
+                  function refreshFiles() {{
+                      log('Manual refresh');
+                      loadFiles(currentPath);
+                  }}
+                  
+                  function testAPI() {{
+                      log('Testing API directly');
+                      fetch('/api/files')
+                      .then(r => r.text())
+                      .then(t => {{
+                          alert('API Response: ' + t.substring(0, 200));
+                          log('API test completed');
+                      }})
+                      .catch(e => {{
+                          alert('API Error: ' + e.message);
+                          log('API test failed: ' + e.message);
+                      }});
+                  }}
+                  
+                  function toggleScheduleInputs() {{
+                      const scheduleType = document.getElementById('scheduleType').value;
+                      const scheduleValue = document.getElementById('scheduleValue');
+                      
+                      if (scheduleType === 'delay') {{
+                          scheduleValue.placeholder = '5m, 30s, 2h';
+                          scheduleValue.value = '5m';
+                      }} else {{
+                          scheduleValue.placeholder = '9pm, 2:30pm, 14:30';
+                          scheduleValue.value = '9pm';
+                      }}
+                  }}
+                  
+                  // Set terminal source
+                  document.getElementById('terminalFrame').src = '/terminal';
+                  log('Terminal frame src set to /terminal');
+                  
+                  // Load files when ready
+                  if (document.readyState === 'complete') {{
+                      loadFiles();
+                  }} else {{
+                      window.addEventListener('load', loadFiles);
+                  }}
+                  
+                  // Retry after delay
+                  setTimeout(function() {{
+                      if (document.getElementById('fileBrowser').textContent.includes('Loading')) {{
+                          log('Retrying file load after delay...');
+                          loadFiles();
+                      }}
+                  }}, 1000);
+              </script>
+          </body>
+          </html>'''
+                  
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'text/html')
+                  self.send_header('Cache-Control', 'no-cache')
+                  self.end_headers()
+                  self.wfile.write(html.encode())
+          
+          if __name__ == '__main__':
+              port = 8080
+              print(f'Starting AI Terminal server on port {port}')
+              print(f'Session: {os.environ.get("SESSION_NAME", "AI Terminal")}')
+              try:
+                  with socketserver.TCPServer(('', port), FileHandler) as httpd:
+                      print(f'Server ready at http://localhost:{port}')
+                      httpd.serve_forever()
+              except Exception as e:
+                  print(f'Error: {e}')
+          PYEOF
+          
+          echo "AI Terminal ready!"
+          echo "Session Name: ${SESSION_NAME}"
+          echo "Session Color: ${SESSION_COLOR}"
+          echo "Web UI: port 8080"
+          echo "Terminal: port 7681"
+          
+          cd /mnt/k8s-tmux
+          python3 /tmp/server.py
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: wiredquill-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/WiredQuill
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-service
+  namespace: k8s-tmux
+spec:
+  selector:
+    app: k8s-tmux
+  ports:
+  - name: web-ui
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+  - name: terminal
+    protocol: TCP
+    port: 7681
+    targetPort: 7681
+  type: LoadBalancer

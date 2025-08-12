@@ -1,0 +1,223 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-tmux
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux
+  namespace: k8s-tmux
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux
+    spec:
+      containers:
+      - name: k8s-tmux
+        image: ghcr.io/wiredquill/k8s-tmux:latest
+        ports:
+        - containerPort: 7681
+        - containerPort: 8080
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - |
+          # Create uploads directory
+          mkdir -p /mnt/k8s-tmux/uploads
+          
+          # Start shared tmux session with colors enabled
+          cd /mnt/k8s-tmux &&
+          tmux new-session -d -s main 'export TERM=xterm-256color && bash' &&
+          
+          # Start ttyd on port 7681 for terminal access
+          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --check-origin tmux attach-session -t main &
+          
+          # Serve a simple web UI on port 8080 with menu buttons
+          cd /tmp && cat > simple-ui.html << 'HTMLEOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>K8s-TMux Terminal</title>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <style>
+                  body { margin: 0; padding: 0; background: #1a1a1a; font-family: 'Courier New', monospace; }
+                  .app-container { 
+                      border: 5px solid var(--session-color, #00ff00); 
+                      height: 100vh; display: flex; flex-direction: column; 
+                      background: #000; box-shadow: 0 0 20px var(--session-color, #00ff00);
+                  }
+                  .header { 
+                      background: var(--session-color, #00ff00); color: #000; padding: 10px; 
+                      display: flex; justify-content: space-between; align-items: center; 
+                      font-weight: bold; font-size: 18px;
+                  }
+                  .session-title { flex-grow: 1; font-size: 20px; font-weight: bold; text-align: center; }
+                  .controls { display: flex; gap: 10px; }
+                  .btn { 
+                      background: #333; color: #fff; border: 1px solid var(--session-color, #00ff00); 
+                      padding: 8px 12px; border-radius: 3px; cursor: pointer; font-size: 14px;
+                  }
+                  .btn:hover { background: var(--session-color, #00ff00); color: #000; }
+                  .terminal-container { flex-grow: 1; position: relative; margin: 5px; }
+                  .terminal-frame { width: 100%; height: 100%; border: none; }
+                  .remote-status { 
+                      position: absolute; top: 5px; right: 5px; padding: 5px 10px; 
+                      border-radius: 15px; font-size: 12px; z-index: 1000;
+                  }
+                  .remote-on { background: #ff4444; color: white; }
+                  .remote-off { background: #444; color: #ccc; }
+                  .color-green { --session-color: #44ff44; }
+                  .color-red { --session-color: #ff4444; }
+                  .color-blue { --session-color: #4444ff; }
+                  .color-yellow { --session-color: #ffff44; }
+                  .color-purple { --session-color: #ff44ff; }
+                  .color-cyan { --session-color: #44ffff; }
+                  .color-orange { --session-color: #ff8844; }
+              </style>
+          </head>
+          <body>
+              <div class="app-container" id="appContainer">
+                  <div class="header">
+                      <div class="controls">
+                          <button class="btn" onclick="changeColor()">🎨 Color</button>
+                          <button class="btn" onclick="changeTitle()">📝 Title</button>
+                      </div>
+                      <div class="session-title" id="sessionTitle">K8s-TMux Terminal</div>
+                      <div class="controls">
+                          <button class="btn" id="remoteBtn" onclick="toggleRemote()">📡 Remote</button>
+                          <button class="btn" onclick="showKubeconfig()">🔧 Kubectl</button>
+                      </div>
+                  </div>
+                  <div class="terminal-container">
+                      <div class="remote-status remote-off" id="remoteStatus">Remote: OFF</div>
+                      <iframe class="terminal-frame" src="http://10.0.10.115:7681" id="terminalFrame"></iframe>
+                  </div>
+              </div>
+              
+              <script>
+                  let remoteMode = false;
+                  let currentColor = 'color-green';
+                  
+                  function loadConfig() {
+                      const title = localStorage.getItem('sessionTitle') || 'K8s-TMux Terminal';
+                      const color = localStorage.getItem('sessionColor') || 'color-green';
+                      document.getElementById('sessionTitle').textContent = title;
+                      document.getElementById('appContainer').className = 'app-container ' + color;
+                      currentColor = color;
+                  }
+                  
+                  function changeColor() {
+                      const colors = ['color-green', 'color-red', 'color-blue', 'color-yellow', 'color-purple', 'color-cyan', 'color-orange'];
+                      const currentIndex = colors.indexOf(currentColor);
+                      const nextColor = colors[(currentIndex + 1) % colors.length];
+                      currentColor = nextColor;
+                      document.getElementById('appContainer').className = 'app-container ' + nextColor;
+                      localStorage.setItem('sessionColor', nextColor);
+                  }
+                  
+                  function changeTitle() {
+                      const newTitle = prompt('Enter session title:', document.getElementById('sessionTitle').textContent);
+                      if (newTitle) {
+                          document.getElementById('sessionTitle').textContent = newTitle;
+                          localStorage.setItem('sessionTitle', newTitle);
+                      }
+                  }
+                  
+                  function toggleRemote() {
+                      remoteMode = !remoteMode;
+                      const status = document.getElementById('remoteStatus');
+                      const btn = document.getElementById('remoteBtn');
+                      
+                      if (remoteMode) {
+                          status.textContent = 'Remote: ON';
+                          status.className = 'remote-status remote-on';
+                          btn.style.background = '#ff4444';
+                          // Send notification
+                          fetch('https://ntfy.wiredquill.com/ai_communication', {
+                              method: 'POST',
+                              headers: { 'Title': 'Claude Remote Mode' },
+                              body: 'Remote mode ENABLED'
+                          });
+                      } else {
+                          status.textContent = 'Remote: OFF';
+                          status.className = 'remote-status remote-off';
+                          btn.style.background = '#333';
+                          // Send notification
+                          fetch('https://ntfy.wiredquill.com/ai_communication', {
+                              method: 'POST',
+                              headers: { 'Title': 'Claude Remote Mode' },
+                              body: 'Remote mode DISABLED'
+                          });
+                      }
+                  }
+                  
+                  function showKubeconfig() {
+                      alert('Kubeconfig Help:\\n\\n1. In terminal: source /tmp/kubeconfig-helper.sh\\n2. Use: kcset - (then paste YAML)\\n3. Use: kconf (to check status)\\n4. Use: kubectl get nodes');
+                  }
+                  
+                  loadConfig();
+              </script>
+          </body>
+          </html>
+          HTMLEOF
+          
+          # Start simple web server using Python (available in the image)
+          python3 -m http.server 8080 &
+          
+          # Wait for services to start
+          sleep 2
+          echo "🎯 Terminal UI ready at port 8080"
+          echo "🔧 Terminal access at port 7681"
+          
+          # Keep container running
+          wait
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+        env:
+        - name: TERM
+          value: "xterm-256color"
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: wiredquill-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/WiredQuill
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-service
+  namespace: k8s-tmux
+spec:
+  selector:
+    app: k8s-tmux
+  ports:
+  - name: web-ui
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+  - name: terminal
+    protocol: TCP
+    port: 7681
+    targetPort: 7681
+  type: LoadBalancer

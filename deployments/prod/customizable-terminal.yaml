@@ -1,0 +1,602 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-tmux
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tmux
+  namespace: k8s-tmux
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-tmux
+  template:
+    metadata:
+      labels:
+        app: k8s-tmux
+    spec:
+      containers:
+      - name: k8s-tmux
+        image: ghcr.io/wiredquill/k8s-tmux:latest
+        ports:
+        - containerPort: 7681
+        - containerPort: 8080
+        env:
+        - name: TERM
+          value: "xterm-256color"
+        - name: SESSION_NAME
+          value: "AI Terminal"  # Change this for different projects
+        - name: SESSION_COLOR
+          value: "#667eea"      # Default gradient start color
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - |
+          mkdir -p /mnt/k8s-tmux/uploads
+          chmod 755 /mnt/k8s-tmux/uploads
+          
+          export TERM=xterm-256color
+          export COLORTERM=truecolor
+          export FORCE_COLOR=1
+          export CLICOLOR_FORCE=1
+          
+          cd /mnt/k8s-tmux
+          tmux new-session -d -s main -c /mnt/k8s-tmux bash
+          tmux send-keys -t main 'export TERM=xterm-256color' Enter
+          tmux send-keys -t main 'clear' Enter
+          
+          echo "Starting ttyd..."
+          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color tmux attach-session -t main > /tmp/ttyd.log 2>&1 &
+          TTYD_PID=$!
+          
+          sleep 3
+          if ps -p $TTYD_PID > /dev/null; then
+            echo "ttyd started successfully (PID: $TTYD_PID)"
+          else
+            echo "ERROR: ttyd failed to start"
+          fi
+          
+          # Create the FULLY WORKING Python server
+          cat > /tmp/server.py << 'PYEOF'
+          #!/usr/bin/env python3
+          import http.server
+          import socketserver
+          import urllib.parse
+          import json
+          import os
+          import subprocess
+          import time
+          
+          class FileHandler(http.server.SimpleHTTPRequestHandler):
+              def do_GET(self):
+                  print(f"GET request: {self.path}")
+                  if self.path == '/':
+                      self.send_ui()
+                  elif self.path.startswith('/api/files'):
+                      self.send_file_list()
+                  elif self.path == '/terminal':
+                      self.redirect_to_ttyd()
+                  else:
+                      super().do_GET()
+              
+              def do_POST(self):
+                  print(f"POST request: {self.path}")
+                  if self.path == '/api/send-command':
+                      self.handle_send_command()
+                  elif self.path == '/api/test-mqtt':
+                      self.handle_test_mqtt()
+                  elif self.path == '/api/schedule-command':
+                      self.handle_schedule_command()
+                  else:
+                      self.send_error(404)
+              
+              def redirect_to_ttyd(self):
+                  host = self.headers.get('Host', 'localhost').split(':')[0]
+                  self.send_response(302)
+                  self.send_header('Location', f'http://{host}:7681')
+                  self.end_headers()
+                  print(f"Redirected /terminal to http://{host}:7681")
+              
+              def handle_send_command(self):
+                  try:
+                      content_length = int(self.headers.get('Content-Length', 0))
+                      post_data = self.rfile.read(content_length)
+                      data = json.loads(post_data.decode('utf-8'))
+                      
+                      command = data.get('command', '')
+                      if not command:
+                          self.send_error(400, "No command provided")
+                          return
+                      
+                      print(f"Sending command to tmux: {command}")
+                      result = subprocess.run(['tmux', 'send-keys', '-t', 'main', command, 'Enter'], 
+                                           capture_output=True, text=True)
+                      
+                      if result.returncode == 0:
+                          response = {"status": "success", "message": "Command sent"}
+                      else:
+                          response = {"status": "error", "message": result.stderr}
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps(response).encode())
+                      
+                  except Exception as e:
+                      print(f"Error in send_command: {e}")
+                      self.send_error(500, f"Command error: {e}")
+              
+              def handle_test_mqtt(self):
+                  try:
+                      print("Testing MQTT connection...")
+                      # Try to publish a test message via mosquitto_pub
+                      result = subprocess.run([
+                          'mosquitto_pub', '-h', '10.0.1.101', '-p', '1883',
+                          '-t', 'ai_terminal/comms', '-m', 'Test message from AI Terminal'
+                      ], capture_output=True, text=True, timeout=10)
+                      
+                      if result.returncode == 0:
+                          response = {"status": "success", "message": "MQTT test message sent successfully"}
+                      else:
+                          response = {"status": "error", "message": f"MQTT failed: {result.stderr}"}
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps(response).encode())
+                      
+                  except Exception as e:
+                      print(f"Error in MQTT test: {e}")
+                      response = {"status": "error", "message": f"MQTT error: {e}"}
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps(response).encode())
+              
+              def handle_schedule_command(self):
+                  try:
+                      content_length = int(self.headers.get('Content-Length', 0))
+                      post_data = self.rfile.read(content_length)
+                      data = json.loads(post_data.decode('utf-8'))
+                      
+                      command = data.get('command', '')
+                      delay = data.get('delay', 300)  # Default 5 minutes
+                      
+                      if not command:
+                          self.send_error(400, "No command provided")
+                          return
+                      
+                      print(f"Scheduling command: {command} in {delay} seconds")
+                      
+                      # Schedule the command using 'at' or simple sleep + tmux
+                      schedule_script = f'''#!/bin/bash
+          sleep {delay}
+          tmux send-keys -t main '{command}' Enter
+          '''
+                      
+                      with open('/tmp/scheduled_cmd.sh', 'w') as f:
+                          f.write(schedule_script)
+                      os.chmod('/tmp/scheduled_cmd.sh', 0o755)
+                      
+                      # Run in background
+                      subprocess.Popen(['/bin/bash', '/tmp/scheduled_cmd.sh'])
+                      
+                      response = {"status": "success", "message": f"Command scheduled for {delay} seconds"}
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps(response).encode())
+                      
+                  except Exception as e:
+                      print(f"Error scheduling command: {e}")
+                      self.send_error(500, f"Schedule error: {e}")
+              
+              def send_file_list(self):
+                  try:
+                      print("Processing /api/files request")
+                      query = urllib.parse.urlparse(self.path).query
+                      params = urllib.parse.parse_qs(query)
+                      path_param = params.get('path', [''])[0]
+                      
+                      base_dir = '/mnt'
+                      full_path = os.path.join(base_dir, path_param) if path_param else base_dir
+                      
+                      if not os.path.exists(full_path):
+                          self.send_error(404, "Path not found")
+                          return
+                      
+                      files = []
+                      for item in os.listdir(full_path):
+                          item_path = os.path.join(full_path, item)
+                          relative_path = os.path.relpath(item_path, base_dir)
+                          
+                          if os.path.isdir(item_path):
+                              files.append({"name": item, "type": "dir", "path": relative_path, "size": 0})
+                          else:
+                              try:
+                                  size = os.path.getsize(item_path)
+                              except:
+                                  size = 0
+                              files.append({"name": item, "type": "file", "path": relative_path, "size": size})
+                      
+                      files.sort(key=lambda x: (x['type'] != 'dir', x['name'].lower()))
+                      response_data = {"files": files, "current_path": path_param}
+                      
+                      json_response = json.dumps(response_data)
+                      print(f"Sending file list response: {len(files)} files")
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                      self.send_header('Access-Control-Allow-Origin', '*')
+                      self.end_headers()
+                      self.wfile.write(json_response.encode())
+                      
+                  except Exception as e:
+                      print(f"Error in send_file_list: {e}")
+                      self.send_error(500, f"Server error: {e}")
+              
+              def send_ui(self):
+                  print("Sending main UI")
+                  
+                  # Get session name and color from environment variables
+                  session_name = os.environ.get('SESSION_NAME', 'AI Terminal')
+                  session_color = os.environ.get('SESSION_COLOR', '#667eea')
+                  
+                  html = f'''<!DOCTYPE html>
+          <html>
+          <head>
+              <title>{session_name}</title>
+              <meta charset="UTF-8">
+              <style>
+                  :root {{
+                      --primary-color: {session_color};
+                      --primary-color-dark: {session_color}dd;
+                  }}
+                  body {{ font-family: Inter, Arial, sans-serif; margin: 0; background: #f5f7fa; }}
+                  .container {{ height: 100vh; display: flex; flex-direction: column; background: white; margin: 8px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }}
+                  .header {{ background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-color-dark) 100%); color: white; padding: 16px; display: flex; justify-content: space-between; align-items: center; border-radius: 12px 12px 0 0; }}
+                  .header h1 {{ margin: 0; font-size: 20px; }}
+                  .main-content {{ flex: 1; display: flex; }}
+                  .terminal-section {{ width: 70%; }}
+                  .sidebar {{ width: 30%; padding: 20px; background: #f8fafc; overflow-y: auto; }}
+                  .section {{ background: white; border-radius: 8px; padding: 16px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; }}
+                  .section-title {{ font-weight: 600; margin-bottom: 12px; color: #2d3748; font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; }}
+                  .file-browser {{ max-height: 200px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px; background: #f7fafc; }}
+                  .file-item {{ padding: 8px 12px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; gap: 8px; transition: all 0.15s ease; }}
+                  .file-item:hover {{ background: #edf2f7; transform: translateX(2px); }}
+                  .terminal-frame {{ width: 100%; height: 100%; border: none; }}
+                  .btn {{ background: var(--primary-color); color: white; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; margin: 4px 2px; font-size: 13px; font-weight: 500; transition: all 0.15s ease; }}
+                  .btn:hover {{ background: var(--primary-color-dark); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }}
+                  .btn.secondary {{ background: #e2e8f0; color: #4a5568; }}
+                  .btn.secondary:hover {{ background: #cbd5e0; }}
+                  .input {{ width: 100%; padding: 10px 12px; margin: 6px 0; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 14px; transition: border-color 0.15s ease; }}
+                  .input:focus {{ outline: none; border-color: var(--primary-color); box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); }}
+                  .debug {{ font-size: 11px; background: #f0f0f0; padding: 8px; border-radius: 4px; margin-top: 8px; color: #666; }}
+                  .config-section {{ margin-top: 10px; padding: 10px; background: #f9f9f9; border-radius: 6px; }}
+                  .color-picker {{ display: flex; gap: 8px; margin: 8px 0; }}
+                  .color-option {{ width: 30px; height: 30px; border-radius: 50%; cursor: pointer; border: 3px solid transparent; transition: all 0.2s ease; }}
+                  .color-option:hover {{ transform: scale(1.1); }}
+                  .color-option.active {{ border-color: #333; }}
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <div class="header">
+                      <h1 id="sessionTitle">🤖 {session_name}</h1>
+                      <div>
+                          <button class="btn" onclick="refreshFiles()">🔄 Refresh</button>
+                          <button class="btn" onclick="testAPI()">🔧 Test API</button>
+                          <button class="btn" onclick="toggleConfig()">⚙️ Config</button>
+                      </div>
+                  </div>
+                  
+                  <div class="main-content">
+                      <div class="terminal-section">
+                          <iframe class="terminal-frame" id="terminalFrame"></iframe>
+                      </div>
+                      
+                      <div class="sidebar">
+                          <div class="section">
+                              <div class="section-title">File Browser</div>
+                              <div class="file-browser" id="fileBrowser">
+                                  <div style="text-align: center; padding: 20px; color: #718096;">Loading files...</div>
+                              </div>
+                              <div class="debug" id="debugInfo">Debug info...</div>
+                          </div>
+                          
+                          <div class="section">
+                              <div class="section-title">Scheduled Commands</div>
+                              <textarea class="input" id="commandText" rows="3" placeholder="Enter commands (one per line)">ls -la --color</textarea>
+                              <div style="display: flex; gap: 6px;">
+                                  <input type="number" class="input" id="delayMinutes" value="5" min="1" style="width: 80px;" placeholder="Min">
+                                  <button class="btn" onclick="scheduleCommand()" style="flex: 1;">📅 Add to Queue</button>
+                              </div>
+                              <div id="scheduleStatus" class="debug" style="display: none;"></div>
+                          </div>
+                          
+                          <div class="section">
+                              <div class="section-title">MQTT Configuration</div>
+                              <input type="text" class="input" id="mqttBroker" value="10.0.1.101:1883" readonly style="background: #f7fafc;">
+                              <input type="text" class="input" id="mqttTopic" value="ai_terminal/comms" placeholder="Topic">
+                              <button class="btn" onclick="testMQTT()" style="width: 100%;">Test Connection</button>
+                              <div id="mqttStatus" class="debug" style="display: none;"></div>
+                          </div>
+                          
+                          <div class="section config-section" id="configSection" style="display: none;">
+                              <div class="section-title">Session Configuration</div>
+                              <label>Session Name:</label>
+                              <input type="text" class="input" id="sessionNameInput" value="{session_name}" onchange="updateSessionName()">
+                              
+                              <label>Color Theme:</label>
+                              <div class="color-picker">
+                                  <div class="color-option" style="background: #667eea;" onclick="updateColor('#667eea')" title="Blue"></div>
+                                  <div class="color-option" style="background: #48bb78;" onclick="updateColor('#48bb78')" title="Green"></div>
+                                  <div class="color-option" style="background: #ed8936;" onclick="updateColor('#ed8936')" title="Orange"></div>
+                                  <div class="color-option" style="background: #e53e3e;" onclick="updateColor('#e53e3e')" title="Red"></div>
+                                  <div class="color-option" style="background: #9f7aea;" onclick="updateColor('#9f7aea')" title="Purple"></div>
+                                  <div class="color-option" style="background: #38b2ac;" onclick="updateColor('#38b2ac')" title="Teal"></div>
+                              </div>
+                              <button class="btn" onclick="saveConfig()" style="width: 100%;">💾 Save Configuration</button>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+              
+              <script>
+                  let currentPath = '';
+                  let debugEl = document.getElementById('debugInfo');
+                  
+                  function log(msg) {{
+                      console.log(msg);
+                      debugEl.textContent = new Date().toLocaleTimeString() + ': ' + msg;
+                  }}
+                  
+                  function loadFiles(path = '') {{
+                      log('Loading files for path: ' + path);
+                      
+                      const url = path ? `/api/files?path=${{encodeURIComponent(path)}}&t=${{Date.now()}}` : `/api/files?t=${{Date.now()}}`;
+                      
+                      fetch(url, {{
+                          method: 'GET',
+                          headers: {{
+                              'Accept': 'application/json',
+                              'Cache-Control': 'no-cache'
+                          }}
+                      }})
+                      .then(response => {{
+                          log('Response status: ' + response.status);
+                          if (!response.ok) throw new Error('HTTP ' + response.status);
+                          return response.json();
+                      }})
+                      .then(data => {{
+                          log('Files received: ' + (data.files ? data.files.length : 0));
+                          currentPath = data.current_path || '';
+                          
+                          const browser = document.getElementById('fileBrowser');
+                          const files = data.files || [];
+                          
+                          if (files.length === 0) {{
+                              browser.innerHTML = '<div style="padding: 20px; text-align: center; color: #718096;">No files found</div>';
+                          }} else {{
+                              browser.innerHTML = files.map(file => 
+                                  `<div class="file-item" onclick="handleFileClick('${{file.path}}', '${{file.type}}', '${{file.name}}')">
+                                      ${{file.type === 'dir' ? '📁' : '📄'}} ${{file.name}}
+                                  </div>`
+                              ).join('');
+                          }}
+                          
+                          log('File browser updated with ' + files.length + ' items');
+                      }})
+                      .catch(error => {{
+                          log('Error: ' + error.message);
+                          document.getElementById('fileBrowser').innerHTML = 
+                              '<div style="color: red; padding: 10px;">Error: ' + error.message + '</div>';
+                      }});
+                  }}
+                  
+                  function handleFileClick(path, type, name) {{
+                      log('Clicked: ' + name + ' (type: ' + type + ', path: ' + path + ')');
+                      if (type === 'dir') {{
+                          log('Navigating to directory: ' + path);
+                          loadFiles(path);
+                      }} else {{
+                          log('File clicked: ' + name);
+                      }}
+                  }}
+                  
+                  function scheduleCommand() {{
+                      const command = document.getElementById('commandText').value.trim();
+                      const delayMinutes = parseInt(document.getElementById('delayMinutes').value) || 5;
+                      
+                      if (!command) {{
+                          alert('Please enter a command');
+                          return;
+                      }}
+                      
+                      log('Scheduling command: ' + command + ' in ' + delayMinutes + ' minutes');
+                      
+                      fetch('/api/schedule-command', {{
+                          method: 'POST',
+                          headers: {{ 'Content-Type': 'application/json' }},
+                          body: JSON.stringify({{ command: command, delay: delayMinutes * 60 }})
+                      }})
+                      .then(response => response.json())
+                      .then(data => {{
+                          const statusEl = document.getElementById('scheduleStatus');
+                          statusEl.textContent = data.message;
+                          statusEl.style.display = 'block';
+                          statusEl.style.backgroundColor = data.status === 'success' ? '#c6f6d5' : '#fed7d7';
+                          log('Schedule result: ' + data.message);
+                      }})
+                      .catch(error => {{
+                          log('Schedule error: ' + error.message);
+                      }});
+                  }}
+                  
+                  function testMQTT() {{
+                      log('Testing MQTT connection...');
+                      
+                      fetch('/api/test-mqtt', {{ method: 'POST' }})
+                      .then(response => response.json())
+                      .then(data => {{
+                          const statusEl = document.getElementById('mqttStatus');
+                          statusEl.textContent = data.message;
+                          statusEl.style.display = 'block';
+                          statusEl.style.backgroundColor = data.status === 'success' ? '#c6f6d5' : '#fed7d7';
+                          log('MQTT test result: ' + data.message);
+                      }})
+                      .catch(error => {{
+                          log('MQTT test error: ' + error.message);
+                      }});
+                  }}
+                  
+                  function refreshFiles() {{
+                      log('Manual refresh');
+                      loadFiles(currentPath);
+                  }}
+                  
+                  function testAPI() {{
+                      log('Testing API directly');
+                      fetch('/api/files')
+                      .then(r => r.text())
+                      .then(t => {{
+                          alert('API Response: ' + t.substring(0, 200));
+                          log('API test completed');
+                      }})
+                      .catch(e => alert('API Error: ' + e.message));
+                  }}
+                  
+                  function toggleConfig() {{
+                      const config = document.getElementById('configSection');
+                      config.style.display = config.style.display === 'none' ? 'block' : 'none';
+                  }}
+                  
+                  function updateSessionName() {{
+                      const newName = document.getElementById('sessionNameInput').value;
+                      document.getElementById('sessionTitle').textContent = '🤖 ' + newName;
+                      document.title = newName;
+                      localStorage.setItem('sessionName', newName);
+                  }}
+                  
+                  function updateColor(color) {{
+                      document.documentElement.style.setProperty('--primary-color', color);
+                      document.documentElement.style.setProperty('--primary-color-dark', color + 'dd');
+                      localStorage.setItem('sessionColor', color);
+                      
+                      // Update active color indicator
+                      document.querySelectorAll('.color-option').forEach(el => el.classList.remove('active'));
+                      event.target.classList.add('active');
+                  }}
+                  
+                  function saveConfig() {{
+                      alert('Configuration saved locally!');
+                      document.getElementById('configSection').style.display = 'none';
+                  }}
+                  
+                  // Load saved configuration
+                  const savedName = localStorage.getItem('sessionName');
+                  const savedColor = localStorage.getItem('sessionColor');
+                  
+                  if (savedName) {{
+                      document.getElementById('sessionNameInput').value = savedName;
+                      updateSessionName();
+                  }}
+                  
+                  if (savedColor) {{
+                      updateColor(savedColor);
+                  }}
+                  
+                  // Set terminal source
+                  document.getElementById('terminalFrame').src = '/terminal';
+                  log('Terminal frame src set to /terminal');
+                  
+                  // Load files when ready
+                  if (document.readyState === 'complete') {{
+                      loadFiles();
+                  }} else {{
+                      window.addEventListener('load', loadFiles);
+                  }}
+                  
+                  // Retry after delay
+                  setTimeout(function() {{
+                      if (document.getElementById('fileBrowser').textContent.includes('Loading')) {{
+                          log('Retrying file load after delay...');
+                          loadFiles();
+                      }}
+                  }}, 1000);
+              </script>
+          </body>
+          </html>'''
+                  
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'text/html')
+                  self.send_header('Cache-Control', 'no-cache')
+                  self.end_headers()
+                  self.wfile.write(html.encode())
+          
+          if __name__ == '__main__':
+              port = 8080
+              print(f'Starting AI Terminal server on port {port}')
+              print(f'Session: {os.environ.get("SESSION_NAME", "AI Terminal")}')
+              print(f'Color: {os.environ.get("SESSION_COLOR", "#667eea")}')
+              try:
+                  with socketserver.TCPServer(('', port), FileHandler) as httpd:
+                      print(f'Server ready at http://localhost:{port}')
+                      httpd.serve_forever()
+              except Exception as e:
+                  print(f'Error: {e}')
+          PYEOF
+          
+          echo "AI Terminal ready!"
+          echo "Session Name: ${SESSION_NAME}"
+          echo "Session Color: ${SESSION_COLOR}"
+          echo "Web UI: port 8080"
+          echo "Terminal: port 7681"
+          
+          cd /mnt/k8s-tmux
+          python3 /tmp/server.py
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: k8s-tmux-storage
+          mountPath: /mnt/k8s-tmux
+        - name: wiredquill-storage
+          mountPath: /mnt/WiredQuill
+      volumes:
+      - name: k8s-tmux-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/k8s-tmux
+      - name: wiredquill-storage
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/WiredQuill
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tmux-service
+  namespace: k8s-tmux
+spec:
+  selector:
+    app: k8s-tmux
+  ports:
+  - name: web-ui
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+  - name: terminal
+    protocol: TCP
+    port: 7681
+    targetPort: 7681
+  type: LoadBalancer
