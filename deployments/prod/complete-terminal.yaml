@@ -1843,3 +1843,5 @@ spec:
     port: 7681
     targetPort: 7681
   type: LoadBalancer
+  externalIPs:
+  - 10.9.0.116
