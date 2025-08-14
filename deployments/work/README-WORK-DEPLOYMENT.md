@@ -80,9 +80,9 @@ helm install k8s-tmux charts/k8s-tmux -n ai-dev --create-namespace
 
 ## Quick Start (Recommended for Work)
 
-1. **Use the direct deployment:**
+1. **Use the full working deployment:**
    ```bash
-   kubectl apply -f https://raw.githubusercontent.com/wiredquill/k8s-tmux/main/deployments/work/direct-deploy.yaml
+   kubectl apply -f https://raw.githubusercontent.com/wiredquill/k8s-tmux/main/deployments/prod/complete-terminal.yaml
    ```
 
 2. **Check deployment:**
