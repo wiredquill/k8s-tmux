@@ -101,6 +101,8 @@ spec:
                       self.handle_schedule_command()
                   elif self.path == '/api/upload':
                       self.handle_file_upload()
+                  elif self.path == '/api/remote-notify':
+                      self.handle_remote_notify()
                   else:
                       self.send_error(404)
               
@@ -375,6 +377,129 @@ spec:
                   delta = target_time - now
                   return int(delta.total_seconds())
               
+              def handle_remote_notify(self):
+                  try:
+                      content_length = int(self.headers.get('Content-Length', 0))
+                      post_data = self.rfile.read(content_length)
+                      data = json.loads(post_data.decode('utf-8'))
+                      
+                      message = data.get('message', '')
+                      level = data.get('level', 'info')
+                      session = data.get('session', 'AI Terminal')
+                      timestamp = data.get('timestamp', '')
+                      remote_mode = data.get('remoteMode', False)
+                      
+                      if not message:
+                          self.send_error(400, "No message provided")
+                          return
+                      
+                      print(f"Remote notification: {message} (level: {level})")
+                      
+                      # Try to send via MQTT first
+                      try:
+                          # Try mosquitto_pub first
+                          try:
+                              mqtt_payload = json.dumps({
+                                  'timestamp': timestamp,
+                                  'source': 'k8s-tmux-terminal',
+                                  'session': session,
+                                  'message': message,
+                                  'level': level,
+                                  'remoteMode': remote_mode
+                              })
+                              
+                              result = subprocess.run([
+                                  'mosquitto_pub', '-h', '10.0.1.101', '-p', '1883',
+                                  '-t', 'ai_terminal/remote_notifications', '-m', mqtt_payload
+                              ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+                              
+                              if result.returncode == 0:
+                                  response = {"status": "success", "message": f"Remote notification sent via MQTT: {message}"}
+                              else:
+                                  raise Exception("mosquitto_pub failed")
+                          
+                          except:
+                              # Fallback: try raw MQTT connection
+                              print("mosquitto_pub not available, trying raw MQTT...")
+                              
+                              sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                              sock.settimeout(5)
+                              sock.connect(('10.0.1.101', 1883))
+                              
+                              # Simple MQTT CONNECT (reusing existing logic)
+                              client_id = f"ai_terminal_remote_{int(time.time())}"
+                              client_id_bytes = client_id.encode('utf-8')
+                              
+                              connect_packet = bytearray()
+                              connect_packet.append(0x10)  # CONNECT
+                              
+                              variable_header = bytearray()
+                              variable_header.extend([0x00, 0x04])  # Protocol name length
+                              variable_header.extend(b'MQTT')       # Protocol name
+                              variable_header.append(0x04)         # Protocol level
+                              variable_header.append(0x02)         # Clean session
+                              variable_header.extend([0x00, 0x3c]) # Keep alive
+                              
+                              payload = bytearray()
+                              payload.extend(len(client_id_bytes).to_bytes(2, 'big'))
+                              payload.extend(client_id_bytes)
+                              
+                              remaining_length = len(variable_header) + len(payload)
+                              connect_packet.append(remaining_length)
+                              connect_packet.extend(variable_header)
+                              connect_packet.extend(payload)
+                              
+                              sock.send(connect_packet)
+                              response_data = sock.recv(4)
+                              
+                              if len(response_data) >= 4 and response_data[0] == 0x20 and response_data[3] == 0x00:
+                                  # Send PUBLISH
+                                  topic = 'ai_terminal/remote_notifications'
+                                  mqtt_message = json.dumps({
+                                      'timestamp': timestamp,
+                                      'source': 'k8s-tmux-terminal',
+                                      'session': session,
+                                      'message': message,
+                                      'level': level,
+                                      'remoteMode': remote_mode
+                                  })
+                                  
+                                  topic_bytes = topic.encode('utf-8')
+                                  message_bytes = mqtt_message.encode('utf-8')
+                                  
+                                  publish_packet = bytearray()
+                                  publish_packet.append(0x30)  # PUBLISH
+                                  remaining_length = 2 + len(topic_bytes) + len(message_bytes)
+                                  publish_packet.append(remaining_length)
+                                  publish_packet.extend(len(topic_bytes).to_bytes(2, 'big'))
+                                  publish_packet.extend(topic_bytes)
+                                  publish_packet.extend(message_bytes)
+                                  
+                                  sock.send(publish_packet)
+                                  sock.close()
+                                  
+                                  response = {"status": "success", "message": f"Remote notification sent via raw MQTT: {message}"}
+                              else:
+                                  raise Exception("MQTT connection failed")
+                      
+                      except Exception as mqtt_error:
+                          print(f"MQTT failed, using local logging: {mqtt_error}")
+                          # Fallback: just log locally
+                          response = {"status": "success", "message": f"Remote notification logged locally: {message}"}
+                      
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps(response).encode())
+                      
+                  except Exception as e:
+                      print(f"Error in remote notification: {e}")
+                      response = {"status": "error", "message": f"Remote notification error: {str(e)}"}
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps(response).encode())
+              
               def handle_download(self):
                   try:
                       print("Processing /api/download request")
@@ -560,6 +685,49 @@ spec:
                   
                   .mobile-menu-btn:hover {{
                       background: rgba(255,255,255,0.3);
+                  }}
+                  
+                  /* Remote Mode Styles */
+                  .remote-btn {{
+                      background: rgba(255,255,255,0.2);
+                      border: none;
+                      color: white;
+                      padding: 8px 12px;
+                      border-radius: 6px;
+                      cursor: pointer;
+                      font-size: 14px;
+                      transition: all 0.3s ease;
+                      display: flex;
+                      align-items: center;
+                      gap: 6px;
+                  }}
+                  
+                  .remote-btn:hover {{
+                      background: rgba(255,255,255,0.3);
+                      transform: translateY(-1px);
+                  }}
+                  
+                  .remote-btn.active {{
+                      background: #22c55e;
+                      color: white;
+                      box-shadow: 0 0 12px rgba(34, 197, 94, 0.4);
+                  }}
+                  
+                  .remote-btn.active:hover {{
+                      background: #16a34a;
+                  }}
+                  
+                  .remote-indicator {{
+                      width: 8px;
+                      height: 8px;
+                      border-radius: 50%;
+                      background: #ef4444;
+                      transition: all 0.3s ease;
+                  }}
+                  
+                  .remote-indicator.active {{
+                      background: #22c55e;
+                      box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
                   }}
                   
                   .main-content {{ 
@@ -930,6 +1098,10 @@ spec:
                       <div class="header-controls">
                           <button class="btn" onclick="refreshFiles()">🔄 Refresh</button>
                           <button class="btn" onclick="testAPI()">🔧 Test API</button>
+                          <button class="remote-btn" id="remoteBtn" onclick="toggleRemote()">
+                              <span class="remote-indicator" id="remoteIndicator"></span>
+                              📡 Remote
+                          </button>
                           <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
                       </div>
                   </div>
@@ -996,6 +1168,7 @@ spec:
                   let dragCounter = 0;
                   let isInitialized = false;
                   let mobileMenuOpen = false;
+                  let remoteMode = false;
                   
                   // Enhanced logging function with error handling
                   function log(msg, level = 'info') {{
@@ -1061,6 +1234,70 @@ spec:
                           }}
                       }} catch (e) {{
                           log(`Error toggling sidebar: ${{e.message}}`, 'error');
+                      }}
+                  }}
+                  
+                  // Remote Mode Functions
+                  function toggleRemote() {{
+                      try {{
+                          remoteMode = !remoteMode;
+                          const btn = document.getElementById('remoteBtn');
+                          const indicator = document.getElementById('remoteIndicator');
+                          
+                          if (!btn || !indicator) {{
+                              log('Remote button elements not found', 'error');
+                              return;
+                          }}
+                          
+                          if (remoteMode) {{
+                              btn.classList.add('active');
+                              indicator.classList.add('active');
+                              log('Remote mode activated', 'success');
+                              
+                              // Send activation notification via MQTT
+                              sendRemoteNotification('Remote mode activated', 'info');
+                          }} else {{
+                              btn.classList.remove('active');
+                              indicator.classList.remove('active');
+                              log('Remote mode deactivated');
+                              
+                              // Send deactivation notification via MQTT  
+                              sendRemoteNotification('Remote mode deactivated', 'info');
+                          }}
+                      }} catch (e) {{
+                          log(`Error toggling remote mode: ${{e.message}}`, 'error');
+                      }}
+                  }}
+                  
+                  function sendRemoteNotification(message, level = 'info') {{
+                      try {{
+                          const payload = {{
+                              timestamp: new Date().toISOString(),
+                              source: 'k8s-tmux-terminal',
+                              session: document.getElementById('sessionTitle').textContent || 'AI Terminal',
+                              message: message,
+                              level: level,
+                              remoteMode: remoteMode
+                          }};
+                          
+                          fetch('/api/remote-notify', {{
+                              method: 'POST',
+                              headers: {{ 'Content-Type': 'application/json' }},
+                              body: JSON.stringify(payload)
+                          }})
+                          .then(response => response.json())
+                          .then(data => {{
+                              if (data.status === 'success') {{
+                                  log(`Remote notification sent: ${{message}}`);
+                              }} else {{
+                                  log(`Remote notification failed: ${{data.message}}`, 'error');
+                              }}
+                          }})
+                          .catch(error => {{
+                              log(`Remote notification error: ${{error.message}}`, 'error');
+                          }});
+                      }} catch (e) {{
+                          log(`Error sending remote notification: ${{e.message}}`, 'error');
                       }}
                   }}
                   
