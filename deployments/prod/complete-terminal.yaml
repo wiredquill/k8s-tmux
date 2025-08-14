@@ -1099,21 +1099,30 @@ spec:
                       try {{
                           const terminalFrame = document.getElementById('terminalFrame');
                           const loadingEl = document.getElementById('terminalLoading');
+                          const currentHost = window.location.hostname;
+                          const currentPort = window.location.port;
+                          
+                          // Calculate terminal port
+                          let terminalPort = '7681'; // default
+                          if (currentPort && currentPort !== '80' && currentPort !== '443') {{
+                              const webPort = parseInt(currentPort);
+                              const terminalOffset = 30239 - 31829; // -1590
+                              terminalPort = (webPort + terminalOffset).toString();
+                          }}
                           
                           if (loadingEl) {{
                               loadingEl.innerHTML = `
                                   <div>🔄 Retrying terminal connection...</div>
-                                  <div style="font-size: 14px; margin-top: 8px; color: #999;">Connecting to :7681</div>
+                                  <div style="font-size: 14px; margin-top: 8px; color: #999;">Connecting to :${{terminalPort}}</div>
                               `;
                               loadingEl.style.display = 'block';
                           }}
                           
                           if (terminalFrame) {{
-                              const currentHost = window.location.hostname;
                               terminalFrame.src = '';
                               setTimeout(() => {{
-                                  terminalFrame.src = `http://${{currentHost}}:7681?t=${{Date.now()}}`;
-                                  log('Retrying terminal connection');
+                                  terminalFrame.src = `http://${{currentHost}}:${{terminalPort}}?t=${{Date.now()}}`;
+                                  log(`Retrying terminal connection to :${{terminalPort}}`);
                               }}, 500);
                           }}
                       }} catch (e) {{
@@ -1407,9 +1416,20 @@ spec:
                       try {{
                           const terminalFrame = document.getElementById('terminalFrame');
                           const currentHost = window.location.hostname;
+                          const currentPort = window.location.port;
                           
                           if (terminalFrame) {{
-                              const terminalUrl = `http://${{currentHost}}:7681`;
+                              // Calculate terminal port based on current port
+                              let terminalPort = '7681'; // default
+                              if (currentPort && currentPort !== '80' && currentPort !== '443') {{
+                                  // We're on NodePort, calculate terminal NodePort
+                                  // Web UI is on :31829, terminal should be :30239
+                                  const webPort = parseInt(currentPort);
+                                  const terminalOffset = 30239 - 31829; // -1590
+                                  terminalPort = (webPort + terminalOffset).toString();
+                              }}
+                              
+                              const terminalUrl = `http://${{currentHost}}:${{terminalPort}}`;
                               terminalFrame.src = terminalUrl;
                               log(`Terminal frame src set to: ${{terminalUrl}}`);
                               
