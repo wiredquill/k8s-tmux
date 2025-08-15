@@ -72,3 +72,145 @@ questions:
   type: string
   label: Memory Limit
   group: "Resources"
+
+# Session Configuration
+- variable: session.name
+  default: "AI Terminal"
+  description: "Display name for the terminal session"
+  label: Session Name
+  type: string
+  group: "Session Configuration"
+
+- variable: session.color
+  default: "#667eea"
+  description: "Color scheme for the terminal UI header"
+  label: Session Color
+  type: string
+  group: "Session Configuration"
+
+- variable: session.user
+  default: "dev"
+  description: "Username for the tmux session"
+  label: Session User
+  type: string
+  group: "Session Configuration"
+
+# Home Directory Storage
+- variable: mounts.homeDirectory.enabled
+  default: true
+  description: "Enable persistent home directory for user data (.kube, .ssh, etc.)"
+  label: Enable Home Directory Mount
+  type: boolean
+  group: "Storage Configuration"
+  show_subquestion_if: true
+  subquestions:
+  - variable: mounts.homeDirectory.nfs.server
+    default: "10.0.0.10"
+    description: "NFS server IP for home directory storage"
+    label: Home Directory NFS Server
+    type: string
+  - variable: mounts.homeDirectory.nfs.path
+    default: "/volume1/k8s/user-homes/dev"
+    description: "NFS path for home directory storage"
+    label: Home Directory NFS Path
+    type: string
+
+# Kubernetes Tools
+- variable: kubernetesTools.kubectx.enabled
+  default: true
+  description: "Install kubectx/kubens for Kubernetes context switching"
+  label: Enable kubectx/kubens
+  type: boolean
+  group: "Kubernetes Tools"
+  show_subquestion_if: true
+  subquestions:
+  - variable: kubernetesTools.kubectx.autoDetectConfigs
+    default: true
+    description: "Automatically detect and load all .yaml files in .kube directory"
+    label: Auto-detect Kube Configs
+    type: boolean
+  - variable: kubernetesTools.kubectx.defaultContext
+    default: ""
+    description: "Default Kubernetes context to activate (leave empty for current)"
+    label: Default Kubernetes Context
+    type: string
+
+- variable: kubernetesTools.kubectl.enabled
+  default: true
+  description: "Install kubectl for Kubernetes cluster management"
+  label: Enable kubectl
+  type: boolean
+  group: "Kubernetes Tools"
+
+- variable: kubernetesTools.helm.enabled
+  default: true
+  description: "Install Helm for Kubernetes package management"
+  label: Enable Helm
+  type: boolean
+  group: "Kubernetes Tools"
+
+- variable: kubernetesTools.k9s.enabled
+  default: true
+  description: "Install k9s for interactive Kubernetes cluster management"
+  label: Enable k9s
+  type: boolean
+  group: "Kubernetes Tools"
+
+# Development Tools
+- variable: devTools.claudeCode.enabled
+  default: false
+  description: "Install Claude Code CLI for AI-assisted development"
+  label: Enable Claude Code
+  type: boolean
+  group: "Development Tools"
+
+- variable: devTools.git.enabled
+  default: true
+  description: "Configure Git with user credentials"
+  label: Enable Git Configuration
+  type: boolean
+  group: "Development Tools"
+  show_subquestion_if: true
+  subquestions:
+  - variable: devTools.git.userName
+    default: ""
+    description: "Git user name for commits"
+    label: Git User Name
+    type: string
+  - variable: devTools.git.userEmail
+    default: ""
+    description: "Git user email for commits"
+    label: Git User Email
+    type: string
+
+- variable: devTools.ssh.enabled
+  default: true
+  description: "Setup SSH key management and configuration"
+  label: Enable SSH Setup
+  type: boolean
+  group: "Development Tools"
+
+# GitHub Integration
+- variable: github.enabled
+  default: false
+  description: "Configure GitHub CLI and authentication"
+  label: Enable GitHub Integration
+  type: boolean
+  group: "GitHub Configuration"
+  show_subquestion_if: true
+  subquestions:
+  - variable: github.username
+    default: ""
+    description: "GitHub username for authentication"
+    label: GitHub Username
+    type: string
+  - variable: github.token
+    default: ""
+    description: "GitHub Personal Access Token for CLI authentication"
+    label: GitHub Token
+    type: password
+  - variable: github.defaultOrg
+    default: ""
+    description: "Default GitHub organization (optional)"
+    label: Default GitHub Organization
+    type: string

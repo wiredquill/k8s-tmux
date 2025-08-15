@@ -52,6 +52,14 @@ mounts:
     nfs:
       server: 10.0.0.10
       path: /volume1/WiredQuill
+  
+  # Home directory mount for persistent user data (.kube, .ssh, etc.)
+  homeDirectory:
+    enabled: true
+    nfs:
+      server: 10.0.0.10
+      path: /volume1/k8s/user-homes/dev
+    mountPath: /home/dev
 
 # Legacy persistence config (for optional PVC-based storage)
 persistence:
@@ -65,6 +73,53 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+# Session configuration
+session:
+  name: "AI Terminal"
+  color: "#667eea"
+  user: "dev"
+
+# Kubernetes tools configuration  
+kubernetesTools:
+  kubectx:
+    enabled: true
+    autoDetectConfigs: true
+    defaultContext: ""
+  
+  kubectl:
+    enabled: true
+    version: "latest"
+  
+  helm:
+    enabled: true
+    version: "latest"
+  
+  k9s:
+    enabled: true
+    version: "latest"
+
+# Development tools
+devTools:
+  claudeCode:
+    enabled: false
+    installScript: "curl -fsSL claude.ai/install.sh | bash"
+  
+  git:
+    enabled: true
+    userName: ""
+    userEmail: ""
+  
+  ssh:
+    enabled: true
+    setupKeys: true
+
+# GitHub integration
+github:
+  enabled: false
+  username: ""
+  token: ""
+  defaultOrg: ""
 
 env:
   TERM: "xterm-256color"

@@ -30,8 +30,10 @@ spec:
         args:
         - "-c"
         - |
-          mkdir -p /mnt/k8s-tmux/uploads
-          chmod 755 /mnt/k8s-tmux/uploads
+          # Create uploads directory in home folder
+          mkdir -p /home/dev/uploads
+          chown -R dev:dev /home/dev/uploads
+          chmod 755 /home/dev/uploads
           
           # Install MQTT client tools - try multiple approaches
           echo "Installing MQTT client tools..."
@@ -40,18 +42,104 @@ spec:
           yum install -y mosquitto-clients 2>/dev/null || \
           echo "MQTT client install failed, will use fallback method"
           
+          # Setup home directory and user environment
+          echo "Setting up user environment..."
+          mkdir -p /home/dev/.kube /home/dev/.ssh /home/dev/bin
+          chown -R dev:dev /home/dev
+          
+          # Install kubectx/kubens for Kubernetes context switching
+          echo "Installing kubectx/kubens..."
+          curl -L https://github.com/ahmetb/kubectx/releases/latest/download/kubectx -o /home/dev/bin/kubectx
+          curl -L https://github.com/ahmetb/kubectx/releases/latest/download/kubens -o /home/dev/bin/kubens
+          chmod +x /home/dev/bin/kubectx /home/dev/bin/kubens
+          
+          # Create kubectx automation script
+          cat > /home/dev/bin/load-kube-configs << 'EOF'
+          #!/bin/bash
+          # Auto-detect and merge all kubeconfig files in ~/.kube directory
+          KUBE_DIR="$HOME/.kube"
+          MERGED_CONFIG="$KUBE_DIR/config"
+          
+          if [ -d "$KUBE_DIR" ]; then
+              echo "🔍 Scanning for Kubernetes config files in $KUBE_DIR..."
+              
+              # Find all .yaml and .yml files
+              CONFIG_FILES=$(find "$KUBE_DIR" -name "*.yaml" -o -name "*.yml" | grep -v "^$MERGED_CONFIG$" | sort)
+              
+              if [ -n "$CONFIG_FILES" ]; then
+                  echo "📋 Found config files:"
+                  echo "$CONFIG_FILES" | sed 's/^/  - /'
+                  
+                  # Backup existing config if it exists
+                  if [ -f "$MERGED_CONFIG" ]; then
+                      cp "$MERGED_CONFIG" "$MERGED_CONFIG.backup.$(date +%Y%m%d-%H%M%S)"
+                  fi
+                  
+                  # Merge all configs
+                  export KUBECONFIG=$(echo "$CONFIG_FILES" | tr '\n' ':' | sed 's/:$//')
+                  if [ -f "$MERGED_CONFIG" ]; then
+                      export KUBECONFIG="$MERGED_CONFIG:$KUBECONFIG"
+                  fi
+                  
+                  kubectl config view --flatten > "$MERGED_CONFIG.tmp" && mv "$MERGED_CONFIG.tmp" "$MERGED_CONFIG"
+                  chmod 600 "$MERGED_CONFIG"
+                  
+                  echo "✅ Merged $(echo "$CONFIG_FILES" | wc -l) config files into $MERGED_CONFIG"
+                  echo "📊 Available contexts:"
+                  kubectl config get-contexts --no-headers | sed 's/^/  /'
+              else
+                  echo "ℹ️  No additional config files found in $KUBE_DIR"
+              fi
+          fi
+          EOF
+          chmod +x /home/dev/bin/load-kube-configs
+          
+          # Install Claude Code CLI (optional)
+          # Note: This will be controlled by Helm values in the chart version
+          # curl -fsSL claude.ai/install.sh | bash
+          
+          # Setup shell environment
+          cat >> /home/dev/.bashrc << 'EOF'
+          # Add user bin to PATH
+          export PATH="$HOME/bin:$PATH"
+          
+          # Kubernetes tools aliases
+          alias k=kubectl
+          alias kx=kubectx
+          alias kn=kubens
+          
+          # Auto-load kube configs on shell start
+          if [ -x "$HOME/bin/load-kube-configs" ]; then
+              $HOME/bin/load-kube-configs
+          fi
+          
+          # Set default kubeconfig
+          export KUBECONFIG="$HOME/.kube/config"
+          
+          # Claude Code integration (if installed)
+          if command -v claude &> /dev/null; then
+              echo "🤖 Claude Code CLI available"
+          fi
+          EOF
+          
+          # Copy bashrc to zshrc for zsh users
+          cp /home/dev/.bashrc /home/dev/.zshrc
+          
+          # Set ownership
+          chown -R dev:dev /home/dev
+          
           export TERM=xterm-256color
           export COLORTERM=truecolor
           export FORCE_COLOR=1
           export CLICOLOR_FORCE=1
           
-          cd /mnt/k8s-tmux
-          tmux new-session -d -s main -c /mnt/k8s-tmux bash
-          tmux send-keys -t main 'export TERM=xterm-256color' Enter
-          tmux send-keys -t main 'clear' Enter
+          # Switch to dev user and start tmux in home directory
+          su - dev -c "cd /home/dev && tmux new-session -d -s main -c /home/dev bash"
+          su - dev -c "tmux send-keys -t main 'export TERM=xterm-256color' Enter"
+          su - dev -c "tmux send-keys -t main 'clear' Enter"
           
           echo "Starting ttyd..."
-          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color tmux attach-session -t main > /tmp/ttyd.log 2>&1 &
+          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color su - dev -c "tmux attach-session -t main" > /tmp/ttyd.log 2>&1 &
           TTYD_PID=$!
           
           sleep 3
@@ -134,8 +222,8 @@ spec:
                               self.send_error(400, "No file selected")
                               return
                           
-                          # Save file to uploads directory
-                          upload_dir = '/mnt/k8s-tmux/uploads'
+                          # Save file to uploads directory in home folder
+                          upload_dir = '/home/dev/uploads'
                           os.makedirs(upload_dir, exist_ok=True)
                           
                           filename = file_item.filename
@@ -1801,7 +1889,8 @@ spec:
           echo "Web UI: port 8080"
           echo "Terminal: port 7681"
           
-          cd /mnt/k8s-tmux
+          # Start Python server with access to both NFS mounts
+          cd /home/dev
           python3 /tmp/server.py
         resources:
           requests:
@@ -1815,6 +1904,8 @@ spec:
           mountPath: /mnt/k8s-tmux
         - name: wiredquill-storage
           mountPath: /mnt/WiredQuill
+        - name: home-directory
+          mountPath: /home/dev
       volumes:
       - name: k8s-tmux-storage
         nfs:
@@ -1824,6 +1915,10 @@ spec:
         nfs:
           server: 10.0.0.10
           path: /volume1/WiredQuill
+      - name: home-directory
+        nfs:
+          server: 10.0.0.10
+          path: /volume1/k8s/user-homes/dev
 ---
 apiVersion: v1
 kind: Service
