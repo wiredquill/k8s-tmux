@@ -1,7 +1,7 @@
 # Default values for k8s-tmux
 # Namespace configuration
-namespaceCreate: false
-namespaceName: "ai-dev"
+namespaceCreate: true
+namespaceName: "k8s-tmux"
 
 # Deployment configuration
 deploymentName: "k8s-tmux"
@@ -58,7 +58,7 @@ mounts:
     enabled: true
     nfs:
       server: 10.0.0.10
-      path: /volume1/k8s/user-homes/dev
+      path: /volume1/k8s/k8s-tmux/home
     mountPath: /home/dev
 
 # Legacy persistence config (for optional PVC-based storage)
