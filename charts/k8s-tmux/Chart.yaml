@@ -2,7 +2,7 @@ apiVersion: v2
 name: k8s-tmux
 description: A web-accessible tmux-based development environment for AI model interactions
 type: application
-version: 0.1.9
+version: 0.1.10
 appVersion: "latest"
 home: https://github.com/wiredquill/k8s-tmux
 sources:
