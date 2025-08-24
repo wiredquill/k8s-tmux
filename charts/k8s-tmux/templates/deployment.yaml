@@ -34,7 +34,7 @@ spec:
         - |
           # Create uploads directory in home folder
           mkdir -p {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}/uploads
-          chown -R {{ .Values.session.user }}:{{ .Values.session.user }} {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}/uploads
+          chown -R {{ .Values.session.user }}:{{ .Values.session.user }} {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} 2>/dev/null || echo "Note: Using existing file permissions"/uploads 2>/dev/null || echo "Note: Could not change ownership of uploads directory"
           chmod 755 {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}/uploads
           
           # Install MQTT client tools - try multiple approaches
@@ -47,7 +47,7 @@ spec:
           # Setup home directory and user environment
           echo "Setting up user environment..."
           mkdir -p {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}/.kube {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}/.ssh {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}/bin
-          chown -R {{ .Values.session.user }}:{{ .Values.session.user }} {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}
+          chown -R {{ .Values.session.user }}:{{ .Values.session.user }} {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} 2>/dev/null || echo "Note: Using existing file permissions"
           
           {{- if .Values.kubernetesTools.kubectx.enabled }}
           # Install kubectx/kubens for Kubernetes context switching
@@ -158,20 +158,35 @@ spec:
           cp {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}/.bashrc {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}/.zshrc
           
           # Set ownership
-          chown -R {{ .Values.session.user }}:{{ .Values.session.user }} {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}
+          chown -R {{ .Values.session.user }}:{{ .Values.session.user }} {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} 2>/dev/null || echo "Note: Using existing file permissions"
           
           export TERM=xterm-256color
           export COLORTERM=truecolor
           export FORCE_COLOR=1
           export CLICOLOR_FORCE=1
           
+          # Ensure dev user exists with proper shell access
+          if ! id {{ .Values.session.user }} &>/dev/null; then
+              useradd -m -s /bin/bash {{ .Values.session.user }} 2>/dev/null || echo "User {{ .Values.session.user }} creation skipped"
+          fi
+          
           # Switch to dev user and start tmux in home directory
-          su - {{ .Values.session.user }} -c "cd {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} && tmux new-session -d -s main -c {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} bash"
-          su - {{ .Values.session.user }} -c "tmux send-keys -t main 'export TERM=xterm-256color' Enter"
-          su - {{ .Values.session.user }} -c "tmux send-keys -t main 'clear' Enter"
+          runuser -l {{ .Values.session.user }} -c "cd {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} && tmux new-session -d -s main -c {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} bash" 2>/dev/null || \
+          su - {{ .Values.session.user }} -c "cd {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} && tmux new-session -d -s main -c {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} bash" 2>/dev/null || \
+          echo "Warning: Could not switch to {{ .Values.session.user }}, running as root"
+          
+          runuser -l {{ .Values.session.user }} -c "tmux send-keys -t main 'export TERM=xterm-256color' Enter" 2>/dev/null || \
+          su - {{ .Values.session.user }} -c "tmux send-keys -t main 'export TERM=xterm-256color' Enter" 2>/dev/null || \
+          echo "Warning: Could not configure tmux as {{ .Values.session.user }}"
+          
+          runuser -l {{ .Values.session.user }} -c "tmux send-keys -t main 'clear' Enter" 2>/dev/null || \
+          su - {{ .Values.session.user }} -c "tmux send-keys -t main 'clear' Enter" 2>/dev/null || \
+          echo "Warning: Could not clear tmux as {{ .Values.session.user }}"
           
           echo "Starting ttyd..."
-          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color su - {{ .Values.session.user }} -c "tmux attach-session -t main" > /tmp/ttyd.log 2>&1 &
+          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color runuser -l {{ .Values.session.user }} -c "tmux attach-session -t main" > /tmp/ttyd.log 2>&1 || \
+          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color su - {{ .Values.session.user }} -c "tmux attach-session -t main" > /tmp/ttyd.log 2>&1 || \
+          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color bash > /tmp/ttyd.log 2>&1 &
           TTYD_PID=$!
           
           sleep 3
@@ -461,9 +476,9 @@ spec:
                       const debugEl = document.getElementById('debugInfo');
                       if (debugEl) {
                           debugEl.textContent = `${timestamp}: ${msg}`;
-                      }}
+                      }
                       console.log(`[AI-TERMINAL] ${timestamp}: ${msg}`);
-                  }}
+                  }
                   
                   function uploadFiles(files) {
                       if (!files || files.length === 0) return;
@@ -498,7 +513,7 @@ spec:
                               log('Upload error: ' + error.message);
                           });
                       });
-                  }}
+                  }
                   
                   // Drag and Drop Event Handlers
                   document.addEventListener('dragenter', function(e) {
@@ -527,7 +542,7 @@ spec:
                       const files = e.dataTransfer.files;
                       if (files.length > 0) {
                           uploadFiles(files);
-                      }}
+                      }
                   });
                   
                   // Upload area specific handlers
@@ -552,7 +567,7 @@ spec:
                       const files = e.dataTransfer.files;
                       if (files.length > 0) {
                           uploadFiles(files);
-                      }}
+                      }
                   });
                   
                   function loadFiles(path = '') {
@@ -562,7 +577,7 @@ spec:
                           const browser = document.getElementById('fileBrowser');
                           if (browser) {
                               browser.innerHTML = '<div style="text-align: center; padding: 20px; color: #718096;">🔄 Loading files...</div>';
-                          }}
+                          }
                           
                           const url = path ? `/api/files?path=${encodeURIComponent(path)}&t=${Date.now()}` : `/api/files?t=${Date.now()}`;
                           
@@ -578,7 +593,7 @@ spec:
                                   throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                               }
                               return response.json();
-                          }})
+                          })
                           .then(data => {
                               log(`Files received: ${data.files ? data.files.length : 0}`);
                               currentPath = data.current_path || '';
@@ -600,11 +615,11 @@ spec:
                                               ${file.type === 'file' && file.name !== '..' ? `<button class="btn" style="padding: 4px 8px; font-size: 10px; margin: 0;" onclick="downloadFile('${escapedPath}', '${escapedName}'); event.stopPropagation();">⬇️</button>` : ''}
                                           </div>
                                       `;
-                                  }}).join('');
-                              }}
+                                  }).join('');
+                              }
                               
                               log('File browser updated successfully');
-                          }})
+                          })
                           .catch(error => {
                               log(`File loading error: ${error.message}`);
                               if (browser) {
@@ -615,12 +630,12 @@ spec:
                                           <button class="btn" onclick="loadFiles('${path}')" style="margin-top: 8px; font-size: 12px; padding: 6px 12px;">🔄 Retry</button>
                                       </div>
                                   `;
-                              }}
+                              }
                           });
                       } catch (e) {
                           log(`Unexpected error in loadFiles: ${e.message}`);
-                      }}
-                  }}
+                      }
+                  }
                   
                   function formatFileSize(bytes) {
                       if (bytes === 0) return '0 B';
@@ -628,7 +643,7 @@ spec:
                       const sizes = ['B', 'KB', 'MB', 'GB'];
                       const i = Math.floor(Math.log(bytes) / Math.log(k));
                       return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-                  }}
+                  }
                   
                   function handleFileClick(path, type, name) {
                       log('Clicked: ' + name + ' (type: ' + type + ', path: ' + path + ')');
@@ -637,8 +652,8 @@ spec:
                           loadFiles(path);
                       } else {
                           log('File clicked: ' + name);
-                      }}
-                  }}
+                      }
+                  }
                   
                   function downloadFile(filePath, fileName) {
                       log('Downloading file: ' + fileName);
@@ -650,26 +665,26 @@ spec:
                       link.click();
                       document.body.removeChild(link);
                       log('Download initiated for: ' + fileName);
-                  }}
+                  }
                   
                   function refreshFiles() {
                       log('Manual refresh');
                       loadFiles(currentPath);
-                  }}
+                  }
                   
                   // Initialize application
                   function initializeApp() {
                       log('🚀 Initializing AI Terminal application...');
                       loadFiles();
                       log('✅ Application initialized successfully');
-                  }}
+                  }
                   
                   // Start app
                   if (document.readyState === 'loading') {
                       document.addEventListener('DOMContentLoaded', initializeApp);
                   } else {
                       initializeApp();
-                  }}
+                  }
               </script>
           </body>
           </html>'''
