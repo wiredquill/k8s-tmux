@@ -7,7 +7,34 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-24T13:49:14.098174628Z"
+    created: "2025-08-24T14:47:39.067794678Z"
+    description: A web-accessible tmux-based development environment for AI model
+      interactions
+    digest: f6c881da8a43afc769056014063c315892415d2f26194ba5103e8cdf6563f336
+    home: https://github.com/wiredquill/k8s-tmux
+    keywords:
+    - tmux
+    - development
+    - ai
+    - terminal
+    - ttyd
+    maintainers:
+    - email: erin@suse.com
+      name: WiredQuill
+    name: k8s-tmux
+    sources:
+    - https://github.com/wiredquill/k8s-tmux
+    type: application
+    urls:
+    - https://wiredquill.github.io/k8s-tmux/k8s-tmux-0.1.12.tgz
+    version: 0.1.12
+  - annotations:
+      catalog.cattle.io/certified: rancher
+      catalog.cattle.io/namespace: ai-dev
+      catalog.cattle.io/release-name: k8s-tmux
+    apiVersion: v2
+    appVersion: latest
+    created: "2025-08-24T14:47:39.067022157Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: bd2a53246acec8dcdca596f9212c993c5f26407e726b8ef72d318e2d95e95d9b
@@ -34,7 +61,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-24T13:49:14.097389032Z"
+    created: "2025-08-24T14:47:39.066252372Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 519eb363d58825ba188597d7c63069a93f8491a86420a0fbbf08a63691558b40
@@ -61,7 +88,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-24T13:49:14.101951371Z"
+    created: "2025-08-24T14:47:39.070107563Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 672c612d71791f8ca3541916655a47b662197fe19eb59279f84838ed2fb0e416
@@ -88,7 +115,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-24T13:49:14.101127964Z"
+    created: "2025-08-24T14:47:39.069167329Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 04366fd36267bacabfa8c7275eef3d29fa93f0d86e658a06f47aed486daf2710
@@ -115,7 +142,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-24T13:49:14.100347348Z"
+    created: "2025-08-24T14:47:39.068737267Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 1953aaa8583088f4ffd9d685b9b13a0d54b3917580c9dfaffb19bfaf40ed4d53
@@ -142,7 +169,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-24T13:49:14.099227081Z"
+    created: "2025-08-24T14:47:39.06825621Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 2b9a4f9d91ec636df52799e68a7de791607696a470256290b9dbe6fa9e247f9b
@@ -163,4 +190,4 @@ entries:
     urls:
     - https://wiredquill.github.io/k8s-tmux/k8s-tmux-0.1.3.tgz
     version: 0.1.3
-generated: "2025-08-24T13:49:14.096454256Z"
+generated: "2025-08-24T14:47:39.065299624Z"
