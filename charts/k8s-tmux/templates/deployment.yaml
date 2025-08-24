@@ -34,7 +34,7 @@ spec:
         - |
           # Create uploads directory in home folder
           mkdir -p {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}/uploads
-          chown -R {{ .Values.session.user }}:{{ .Values.session.user }} {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} 2>/dev/null || echo "Note: Using existing file permissions"/uploads 2>/dev/null || echo "Note: Could not change ownership of uploads directory"
+          chown -R {{ .Values.session.user }}:{{ .Values.session.user }} {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}/uploads 2>/dev/null || echo "Note: Could not change ownership of uploads directory"
           chmod 755 {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}/uploads
           
           # Install MQTT client tools - try multiple approaches
