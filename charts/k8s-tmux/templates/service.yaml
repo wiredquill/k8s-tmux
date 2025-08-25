@@ -12,9 +12,5 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
-    - port: 7681
-      targetPort: terminal
-      protocol: TCP
-      name: terminal
   selector:
     {{- include "k8s-tmux.selectorLabels" . | nindent 4 }}

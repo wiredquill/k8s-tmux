@@ -725,9 +725,6 @@ spec:
         - name: http
           containerPort: {{ .Values.service.targetPort }}
           protocol: TCP
-        - name: terminal
-          containerPort: 7681
-          protocol: TCP
         resources:
           {{- toYaml .Values.resources | nindent 10 }}
         env:
