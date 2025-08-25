@@ -196,29 +196,25 @@ spec:
             echo "ERROR: ttyd failed to start"
           fi
           
-          # Create simple Python server for terminal access
+          # Create Python server for web UI and file management
           cat > /tmp/server.py << 'PYEOF'
-#!/usr/bin/env python3
-import http.server
-import socketserver
-
-class RedirectHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/':
-            self.send_response(302)
-            self.send_header('Location', 'http://' + self.headers['Host'].split(':')[0] + ':7681')
-            self.end_headers()
-        else:
-            self.send_error(404)
-
-port = 8080
-with socketserver.TCPServer(("", port), RedirectHandler) as httpd:
-    print(f"Simple redirect server at port {port}")
-    httpd.serve_forever()
-PYEOF
+          #!/usr/bin/env python3
+          import http.server
+          import socketserver
+          import urllib.parse
+          import json
+          import os
+          import subprocess
+          import time
+          import socket
+          import struct
+          import cgi
+          import shutil
+          from io import BytesIO
           
-          echo "AI Terminal ready!"
-          echo "Session Name: ${SESSION_NAME}"
+          class FileHandler(http.server.SimpleHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == '/':
                       self.send_ui()
                   elif self.path.startswith('/api/files'):
                       self.send_file_list()
@@ -709,7 +705,7 @@ PYEOF
                       httpd.serve_forever()
               except Exception as e:
                   print(f'Error: {e}')
-PYEOF
+          PYEOF
           
           echo "AI Terminal ready!"
           echo "Session Name: $${SESSION_NAME}"
@@ -719,7 +715,12 @@ PYEOF
           
           # Start Python server with access to both NFS mounts
           cd {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}
-          python3 /tmp/server.py
+          # python3 /tmp/server.py - temporarily disabled due to JavaScript syntax conflicts
+          
+          # Keep container running for terminal access
+          echo "Note: Web UI on port 8080 is temporarily disabled"
+          echo "Terminal access is available on port 7681"
+          tail -f /dev/null
         ports:
         - name: http
           containerPort: {{ .Values.service.targetPort }}
