@@ -499,16 +499,16 @@ spec:
                           .then(response => response.json())
                           .then(data => {
                               if (data.status === 'success') {
-                                  statusEl.textContent = `✅ Uploaded: $${data.filename}} ($${Math.round(data.size/1024)}}KB)`;
+                                  statusEl.textContent = '✅ Uploaded: ' + data.filename + ' (' + Math.round(data.size/1024) + 'KB)';
                                   statusEl.style.backgroundColor = '#c6f6d5';
                                   log('File uploaded: ' + data.filename);
                               } else {
-                                  statusEl.textContent = `❌ Upload failed: $${data.message}`;
+                                  statusEl.textContent = '❌ Upload failed: ' + data.message;
                                   statusEl.style.backgroundColor = '#fed7d7';
                               }
                           })
                           .catch(error => {
-                              statusEl.textContent = `❌ Upload error: $${error.message}`;
+                              statusEl.textContent = '❌ Upload error: ' + error.message;
                               statusEl.style.backgroundColor = '#fed7d7';
                               log('Upload error: ' + error.message);
                           });
@@ -572,14 +572,14 @@ spec:
                   
                   function loadFiles(path = '') {
                       try {
-                          log(`Loading files for path: "$${path}}"`);
+                          log('Loading files for path: "' + path + '"');
                           
                           const browser = document.getElementById('fileBrowser');
                           if (browser) {
                               browser.innerHTML = '<div style="text-align: center; padding: 20px; color: #718096;">🔄 Loading files...</div>';
                           }
                           
-                          const url = path ? `/api/files?path=$${encodeURIComponent(path)}}&t=$${Date.now()}}` : `/api/files?t=$${Date.now()}`;
+                          const url = path ? '/api/files?path=' + encodeURIComponent(path) + '&t=' + Date.now() : '/api/files?t=' + Date.now();
                           
                           fetch(url, {
                               method: 'GET',
@@ -590,12 +590,12 @@ spec:
                           })
                           .then(response => {
                               if (!response.ok) {
-                                  throw new Error(`HTTP $${response.status}}: $${response.statusText}}`);
+                                  throw new Error('HTTP ' + response.status + ': ' + response.statusText);
                               }
                               return response.json();
                           })
                           .then(data => {
-                              log(`Files received: $${data.files ? data.files.length : 0}}`);
+                              log('Files received: ' + (data.files ? data.files.length : 0));
                               currentPath = data.current_path || '';
                               
                               const files = data.files || [];
@@ -621,19 +621,19 @@ spec:
                               log('File browser updated successfully');
                           })
                           .catch(error => {
-                              log(`File loading error: $${error.message}}`);
+                              log('File loading error: ' + error.message);
                               if (browser) {
                                   browser.innerHTML = `
                                       <div style="color: #e53e3e; padding: 15px; text-align: center;">
                                           ❌ Error loading files<br>
-                                          <small style="color: #666;">$${error.message}}</small><br>
+                                          <small style="color: #666;">' + error.message + '</small><br>
                                           <button class="btn" onclick="loadFiles('$${path}}')" style="margin-top: 8px; font-size: 12px; padding: 6px 12px;">🔄 Retry</button>
                                       </div>
                                   `;
                               }
                           });
                       } catch (e) {
-                          log(`Unexpected error in loadFiles: $${e.message}}`);
+                          log('Unexpected error in loadFiles: ' + e.message);
                       }
                   }
                   
