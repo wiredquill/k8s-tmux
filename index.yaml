@@ -7,7 +7,34 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-25T04:01:15.136085183Z"
+    created: "2025-08-25T14:26:49.491316846Z"
+    description: A web-accessible tmux-based development environment for AI model
+      interactions
+    digest: 978379d229233d493ef3fc79d603a1268dfbc7fa372de98a471a0e53eac355ed
+    home: https://github.com/wiredquill/k8s-tmux
+    keywords:
+    - tmux
+    - development
+    - ai
+    - terminal
+    - ttyd
+    maintainers:
+    - email: erin@suse.com
+      name: WiredQuill
+    name: k8s-tmux
+    sources:
+    - https://github.com/wiredquill/k8s-tmux
+    type: application
+    urls:
+    - https://wiredquill.github.io/k8s-tmux/k8s-tmux-0.1.19.tgz
+    version: 0.1.19
+  - annotations:
+      catalog.cattle.io/certified: rancher
+      catalog.cattle.io/namespace: ai-dev
+      catalog.cattle.io/release-name: k8s-tmux
+    apiVersion: v2
+    appVersion: latest
+    created: "2025-08-25T14:26:49.490581205Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 1dc393764d31cc8533bc37053ef4a3ee5fef4494560117e35b28bbd918da4c11
@@ -34,7 +61,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-25T04:01:15.135306971Z"
+    created: "2025-08-25T14:26:49.489805018Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 9fa0b8fadd19d8b68eb2b18fbbb9c407e29ef433cebef7b20c89f6c1e6f1afba
@@ -61,7 +88,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-25T04:01:15.134176045Z"
+    created: "2025-08-25T14:26:49.489036575Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 9f9153920d58143ff03d04a58b59e5f3d4d479d1920d4ede93c6130f3f301fc4
@@ -88,7 +115,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-25T04:01:15.132790669Z"
+    created: "2025-08-25T14:26:49.487931707Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 8a61c3fb2034cc99814a33e3cc3c66fcf3a02226111eb574016e6a141de24663
@@ -115,7 +142,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-25T04:01:15.132072829Z"
+    created: "2025-08-25T14:26:49.486955767Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 00e567bac713b4d6c3e7c99674947a33fe37185aec50c677d48bf31e57ba5f93
@@ -142,7 +169,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-25T04:01:15.131345462Z"
+    created: "2025-08-25T14:26:49.486192134Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 859f4e8acde76e25306ed7f1d2fc081d8c1074046a29a94508129e63e6e1375b
@@ -169,7 +196,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-25T04:01:15.130583109Z"
+    created: "2025-08-25T14:26:49.485435263Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: f6c881da8a43afc769056014063c315892415d2f26194ba5103e8cdf6563f336
@@ -196,7 +223,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-25T04:01:15.129802332Z"
+    created: "2025-08-25T14:26:49.484664926Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: bd2a53246acec8dcdca596f9212c993c5f26407e726b8ef72d318e2d95e95d9b
@@ -223,7 +250,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-25T04:01:15.129047664Z"
+    created: "2025-08-25T14:26:49.483886064Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 519eb363d58825ba188597d7c63069a93f8491a86420a0fbbf08a63691558b40
@@ -250,7 +277,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-25T04:01:15.138136531Z"
+    created: "2025-08-25T14:26:49.493435416Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 672c612d71791f8ca3541916655a47b662197fe19eb59279f84838ed2fb0e416
@@ -277,7 +304,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-25T04:01:15.137403764Z"
+    created: "2025-08-25T14:26:49.492700145Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 04366fd36267bacabfa8c7275eef3d29fa93f0d86e658a06f47aed486daf2710
@@ -304,7 +331,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-25T04:01:15.13698402Z"
+    created: "2025-08-25T14:26:49.492253933Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 1953aaa8583088f4ffd9d685b9b13a0d54b3917580c9dfaffb19bfaf40ed4d53
@@ -331,7 +358,7 @@ entries:
       catalog.cattle.io/release-name: k8s-tmux
     apiVersion: v2
     appVersion: latest
-    created: "2025-08-25T04:01:15.136527929Z"
+    created: "2025-08-25T14:26:49.491830484Z"
     description: A web-accessible tmux-based development environment for AI model
       interactions
     digest: 2b9a4f9d91ec636df52799e68a7de791607696a470256290b9dbe6fa9e247f9b
@@ -352,4 +379,4 @@ entries:
     urls:
     - https://wiredquill.github.io/k8s-tmux/k8s-tmux-0.1.3.tgz
     version: 0.1.3
-generated: "2025-08-25T04:01:15.128094496Z"
+generated: "2025-08-25T14:26:49.482880319Z"
