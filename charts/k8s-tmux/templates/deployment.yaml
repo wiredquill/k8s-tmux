@@ -196,8 +196,8 @@ spec:
             echo "ERROR: ttyd failed to start"
           fi
           
-          # Create Python server for web UI and file management
-          cat > /tmp/server.py << 'PYEOF'
+          # Create Python server for web UI and file management (temporarily disabled due to syntax issues)
+          # cat > /tmp/server.py << 'PYEOF'
           #!/usr/bin/env python3
           import http.server
           import socketserver
@@ -705,7 +705,7 @@ spec:
                       httpd.serve_forever()
               except Exception as e:
                   print(f'Error: {e}')
-          PYEOF
+          # PYEOF
           
           echo "AI Terminal ready!"
           echo "Session Name: $${SESSION_NAME}"
@@ -715,7 +715,9 @@ spec:
           
           # Start Python server with access to both NFS mounts
           cd {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}
-          python3 /tmp/server.py
+          # python3 /tmp/server.py - temporarily disabled
+          # Keep container running for terminal access
+          tail -f /dev/null
         ports:
         - name: http
           containerPort: {{ .Values.service.targetPort }}
