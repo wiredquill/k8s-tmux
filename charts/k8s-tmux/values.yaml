@@ -42,20 +42,20 @@ resources:
 # Direct NFS mounts (no PVCs needed)
 mounts:
   k8sTmux:
-    enabled: false
+    enabled: true
     nfs:
       server: 10.0.0.10
       path: /volume1/k8s/k8s-tmux
   
   wiredQuill:
-    enabled: false
+    enabled: true
     nfs:
       server: 10.0.0.10
       path: /volume1/WiredQuill
   
   # Home directory mount for persistent user data (.kube, .ssh, etc.)
   homeDirectory:
-    enabled: false
+    enabled: true
     nfs:
       server: 10.0.0.10
       path: /volume1/k8s/k8s-tmux/home
