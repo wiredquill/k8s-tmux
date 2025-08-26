@@ -170,23 +170,39 @@ spec:
               useradd -m -s /bin/bash {{ .Values.session.user }} 2>/dev/null || echo "User {{ .Values.session.user }} creation skipped"
           fi
           
-          # Switch to dev user and start tmux in home directory
-          runuser -l {{ .Values.session.user }} -c "cd {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} && tmux new-session -d -s main -c {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} bash" 2>/dev/null || \
-          su - {{ .Values.session.user }} -c "cd {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} && tmux new-session -d -s main -c {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} bash" 2>/dev/null || \
-          echo "Warning: Could not switch to {{ .Values.session.user }}, running as root"
-          
-          runuser -l {{ .Values.session.user }} -c "tmux send-keys -t main 'export TERM=xterm-256color' Enter" 2>/dev/null || \
-          su - {{ .Values.session.user }} -c "tmux send-keys -t main 'export TERM=xterm-256color' Enter" 2>/dev/null || \
-          echo "Warning: Could not configure tmux as {{ .Values.session.user }}"
-          
-          runuser -l {{ .Values.session.user }} -c "tmux send-keys -t main 'clear' Enter" 2>/dev/null || \
-          su - {{ .Values.session.user }} -c "tmux send-keys -t main 'clear' Enter" 2>/dev/null || \
-          echo "Warning: Could not clear tmux as {{ .Values.session.user }}"
+          # Check if we're already running as the target user
+          CURRENT_USER=$(whoami)
+          if [ "$CURRENT_USER" = "{{ .Values.session.user }}" ]; then
+              echo "Already running as {{ .Values.session.user }}, creating tmux session directly"
+              cd {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}
+              tmux new-session -d -s main -c {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} bash 2>/dev/null || echo "tmux session creation failed or already exists"
+              tmux send-keys -t main 'export TERM=xterm-256color' Enter 2>/dev/null || echo "Could not configure tmux TERM"
+              tmux send-keys -t main 'clear' Enter 2>/dev/null || echo "Could not clear tmux"
+          else
+              echo "Running as $CURRENT_USER, attempting to switch to {{ .Values.session.user }}"
+              # Switch to dev user and start tmux in home directory
+              runuser -l {{ .Values.session.user }} -c "cd {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} && tmux new-session -d -s main -c {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} bash" 2>/dev/null || \
+              su - {{ .Values.session.user }} -c "cd {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} && tmux new-session -d -s main -c {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }} bash" 2>/dev/null || \
+              echo "Warning: Could not switch to {{ .Values.session.user }}, running as root"
+              
+              runuser -l {{ .Values.session.user }} -c "tmux send-keys -t main 'export TERM=xterm-256color' Enter" 2>/dev/null || \
+              su - {{ .Values.session.user }} -c "tmux send-keys -t main 'export TERM=xterm-256color' Enter" 2>/dev/null || \
+              echo "Warning: Could not configure tmux as {{ .Values.session.user }}"
+              
+              runuser -l {{ .Values.session.user }} -c "tmux send-keys -t main 'clear' Enter" 2>/dev/null || \
+              su - {{ .Values.session.user }} -c "tmux send-keys -t main 'clear' Enter" 2>/dev/null || \
+              echo "Warning: Could not clear tmux as {{ .Values.session.user }}"
+          fi
           
           echo "Starting ttyd..."
-          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color runuser -l {{ .Values.session.user }} -c "tmux attach-session -t main" > /tmp/ttyd.log 2>&1 || \
-          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color su - {{ .Values.session.user }} -c "tmux attach-session -t main" > /tmp/ttyd.log 2>&1 || \
-          /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color bash > /tmp/ttyd.log 2>&1 &
+          # Start ttyd with appropriate user context
+          if [ "$CURRENT_USER" = "{{ .Values.session.user }}" ]; then
+              /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color tmux attach-session -t main > /tmp/ttyd.log 2>&1 &
+          else
+              /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color runuser -l {{ .Values.session.user }} -c "tmux attach-session -t main" > /tmp/ttyd.log 2>&1 || \
+              /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color su - {{ .Values.session.user }} -c "tmux attach-session -t main" > /tmp/ttyd.log 2>&1 || \
+              /usr/local/bin/ttyd --port 7681 --interface 0.0.0.0 --writable --terminal-type xterm-256color bash > /tmp/ttyd.log 2>&1 &
+          fi
           TTYD_PID=$!
           
           sleep 3
