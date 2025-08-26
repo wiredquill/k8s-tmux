@@ -731,15 +731,20 @@ spec:
           
           # Start Python server with access to both NFS mounts
           cd {{ .Values.mounts.homeDirectory.mountPath | default "/home/dev" }}
-          # python3 /tmp/server.py - temporarily disabled due to JavaScript syntax conflicts
+          echo "Starting Web UI on port 8080..."
+          python3 /tmp/server.py &
           
-          # Keep container running for terminal access
-          echo "Note: Web UI on port 8080 is temporarily disabled"
-          echo "Terminal access is available on port 7681"
+          # Keep container running 
+          echo "Web UI: port 8080"
+          echo "Terminal: port 7681"
+          echo "All services running!"
           tail -f /dev/null
         ports:
         - name: http
           containerPort: {{ .Values.service.targetPort }}
+          protocol: TCP
+        - name: webui
+          containerPort: 8080
           protocol: TCP
         resources:
           {{- toYaml .Values.resources | nindent 10 }}

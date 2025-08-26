@@ -12,5 +12,9 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
+    - port: 8080
+      targetPort: webui
+      protocol: TCP
+      name: webui
   selector:
     {{- include "k8s-tmux.selectorLabels" . | nindent 4 }}
